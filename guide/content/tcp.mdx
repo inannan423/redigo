@@ -40,6 +40,8 @@ import { FileTree } from "nextra/components";
   </FileTree.Folder>
 </FileTree>
 
+为什么要实现一个 TCP 服务器呢？因为 Redis 服务器要实现客户端与服务器之间的通信，而 Redis 服务器使用的是 TCP 协议。因此，我们需要先实现一个 TCP 服务器，然后在此基硃上实现 Redis 服务器。
+
 ## Config 加载
 
 Redis 中的配置文件是 `redis.conf`，用于存储 Redis 服务器的配置信息。
