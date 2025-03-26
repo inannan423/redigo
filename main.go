@@ -2,11 +2,11 @@ package main
 
 import (
 	"fmt"
-	"go-redis/config"
-	"go-redis/lib/logger"
-	"go-redis/tcp"
-	EchoHandler "go-redis/tcp"
 	"os"
+	"redigo/config"
+	"redigo/lib/logger"
+	"redigo/tcp"
+	EchoHandler "redigo/tcp"
 )
 
 const configFile string = "redis.conf"

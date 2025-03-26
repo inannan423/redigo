@@ -21,10 +21,10 @@ type Config struct {
 	Address string
 }
 
-// ListenAndServeWithSignal binds port and handle requests, blocking until receive stop signal
+// ListenAndServeWithSignal 绑定端口，启动服务，直到收到退出信号
 func ListenAndServeWithSignal(cfg *Config, handler tcp.Handler) error {
 	closeChan := make(chan struct{})
-	sigCh := make(chan os.Signal)
+	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGHUP, syscall.SIGQUIT, syscall.SIGTERM, syscall.SIGINT)
 	go func() {
 		sig := <-sigCh
