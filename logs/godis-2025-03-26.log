@@ -1,9 +1,0 @@
-[INFO][server.go:40] 2025/03/26 16:44:15 bind: 0.0.0.0:6379, start listening...
-[INFO][server.go:69] 2025/03/26 16:45:28 accept link
-[INFO][echo.go:64] 2025/03/26 16:46:58 connection close
-[INFO][server.go:69] 2025/03/26 16:47:14 accept link
-[INFO][server.go:69] 2025/03/26 16:47:29 accept link
-[INFO][echo.go:64] 2025/03/26 16:48:03 connection close
-[INFO][echo.go:64] 2025/03/26 16:48:04 connection close
-[INFO][server.go:50] 2025/03/26 16:50:23 shutting down...
-[INFO][echo.go:80] 2025/03/26 16:50:23 handler shutting down...
