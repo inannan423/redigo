@@ -1,0 +1,422 @@
+# 实现 Redis 协议解析器
+
+## RESP 协议介绍
+
+Redis 的客户端和服务器之间使用 RESP 协议进行通信。RESP 是 **Re**dis **S**erialization **P**rotocol 的缩写，即 Redis 序列化协议。
+
+### 数据格式
+
+#### 正常回复
+
+以 `+` 开头的回复表示状态回复，比如 `+OK`。以 `\r\n` 结尾。
+
+```bash
++OK\r\n
+```
+
+表示一个状态回复，内容为 `OK`。`\r\n` 表示回车和换行，是由 Redis 客户端自动添加的，为了方便 Redis 服务器解析。
+
+#### 错误回复
+
+以 `-` 开头的回复表示错误回复，格式为 `-[消息]`。以 `\r\n` 结尾。
+
+```bash
+-ERR unknown command 'foobar'\r\n
+```
+
+#### 整数
+
+以 `:` 开头的回复表示整数回复，格式为 `:[数字]`。以 `\r\n` 结尾。
+
+```bash
+:1000\r\n
+```
+
+#### 多行字符串
+
+以 `$` 开头的回复表示多行字符串回复，格式为 `$[字符串长度(字节数)]\r\n[字符串]\r\n`。
+
+```bash
+$6\r\nfoobar\r\n
+```
+
+空字符串：
+
+```bash
+$0\r\n\r\n
+```
+
+如果我的字符串中含有 `\r\n`，使用字符数就可确定哪里才是真正的结束符。
+
+```bash
+$10\r\nfoo\r\nbar\r\n
+```
+
+#### 数组
+
+以 `*` 开头的回复表示数组回复，格式为 `*[数组长度]\r\n$[字符串长度(字节数)]\r\n[字符串]\r\n$[字符串长度(字节数)]\r\n[字符串]\r\n`。
+
+```bash
+*2\r\n$3\r\nfoo\r\n$3\r\nbar\r\n
+```
+
+表示一个长度为 2 的数组，包含两个字符串 `foo` 和 `bar`。
+
+本文要实现的就是对 RESP 协议的解析。
+
+## 实现回复功能
+
+### 接口定义
+
+首先我们要定义一个接口用于处理连接。
+
+在 `interface` 中创建一个 `resp` 包，然后创建 `conn.go` 文件。
+
+```go filename="interface/resp/conn.go"
+type Connection interface {
+	Write([]byte) error // 写入数据
+	GetDBIndex() int    // 获取当前连接的数据库索引
+	SelectDB(int)       // 选择数据库
+}
+```
+
+然后创建一个接口 `Reply`，用于处理回复。
+
+Redis 的回复有多种类型，我们可以使用接口来处理。上面我们说到了有四种回复类型，分别是状态回复、错误回复、整数回复和多行字符串回复，对于不同类型我们的处理方式也不同，因此使用接口来处理。这样我们使用的时候，只需要调用接口的方法即可。
+
+```go filename="interface/resp/reply.go"
+type Reply interface {
+    ToBytes() []byte // 将回复转换为字节切片
+}
+```
+
+### 实现固定回复的 Reply 接口
+
+在 Redis 中，每个类型都存在固定回复，例如当我们完成一个操作时，返回的是 `OK`，这是一个固定回复。我们可以实现一个固定回复的结构体，然后实现 `Reply` 接口。又比如，Redis 可以接收 PING 命令，返回的是 `PONG`，这也是一个固定回复。
+
+那么我们在根目录下创建一个 `resp` 文件夹，然后创建一个 `reply` 包，然后创建 `consts.go` 文件。
+
+以 PONG 回复为例，我们创建一个 `Pong` 结构体，实现 `Reply` 接口。（因为我们要实现接口，所以就必须有个结构体，然后实现接口的方法，就算结构体是空的，也可以）
+
+```go filename="resp/reply/consts.go"
+// PongReply 在客户端发送 PING 命令时的回复是固定的 PONG
+type PongReply struct{}
+
+// ToBytes 将回复转换为字节数组
+func (r *PongReply) ToBytes() []byte {
+	return []byte("+PONG\r\n")
+}
+
+// MakePongReply 创建一个 PONG 回复
+// 这里使用了工厂模式，将 pongReply 的构造函数隐藏起来
+func MakePongReply() *PongReply {
+	return &PongReply{}
+}
+```
+
+这里实现了一个 `PongReply` 结构体，实现了 `Reply` 接口的 `ToBytes` 方法，返回的是 `+PONG\r\n`。
+
+这里也使用了工厂模式，将 `PongReply` 的构造函数隐藏起来，这样我们在使用的时候，只需要调用 `MakePongReply` 方法即可。
+
+同理地，实现下面的几个固定回复。
+
+```go filename="resp/reply/consts.go"
+// OKReply 在客户端发送 SET 命令时的回复是固定的 OK
+type OKReply struct{}
+
+func (r *OKReply) ToBytes() []byte {
+	return []byte("+OK\r\n")
+}
+
+func MakeOKReply() *OKReply {
+	return &OKReply{}
+}
+
+// NullBulkReply 空的 Bulk 回复(字符串 nil)
+type NullBulkReply struct{}
+
+func ToBytes() []byte {
+	return []byte("$-1\r\n") // -1，表示 nil 值
+}
+
+func MakeNullBulkReply() *NullBulkReply {
+	return &NullBulkReply{}
+}
+
+// EmptyBulkReply 空的 Bulk 回复(空字符串)
+type EmptyBulkReply struct{}
+
+func (r *EmptyBulkReply) ToBytes() []byte {
+	return []byte("$0\r\n\r\n") // 0，表示空字符串
+}
+
+func MakeEmptyBulkReply() *EmptyBulkReply {
+	return &EmptyBulkReply{}
+}
+
+// EmptyMultiBulkReply 空的 MultiBulk 回复(空数组)
+type EmptyMultiBulkReply struct{}
+
+func (r *EmptyMultiBulkReply) ToBytes() []byte {
+	return []byte("*0\r\n")
+}
+
+func MakeEmptyMultiBulkReply() *EmptyMultiBulkReply {
+	return &EmptyMultiBulkReply{}
+}
+
+// NoReply 无回复
+type NoReply struct{}
+
+func (r *NoReply) ToBytes() []byte {
+	return []byte("")
+}
+
+func MakeNoReply() *NoReply {
+	return &NoReply{}
+}
+```
+
+主要需要实现的是：
+
+- `OKReply`：在客户端发送 `SET` 命令时的回复是固定的 `OK`。
+- `NullBulkReply`：空的 Bulk 回复，Bulk 是多行字符串，`-1` 表示 `nil` 值。比如 `GET` 命令，如果 key 不存在，就会返回 `nil`。
+- `EmptyBulkReply`：空的 Bulk 回复，`0` 表示空字符串。比如 `SET` 命令，如果 key 不存在，就会返回空字符串。
+- `EmptyMultiBulkReply`：空的 MultiBulk 回复，`0` 表示空数组。比如 `LRANGE` 命令，如果 key 不存在，就会返回空数组。
+- `NoReply`：无回复。
+
+> 在 Redis 中，Bulk 是多行字符串，MultiBulk 是数组。
+
+### 异常回复
+
+首先在 `reply` 包中创建一个 `reply.go` 文件。
+
+在这里我们定义一个 `ErrorReply` 接口，这个接口继承了 `Reply` 接口和系统的 `error` 接口。
+
+为什么异常回复需要单独定义一个接口而上面的 Const 固定回复不需要呢？因为异常回复是需要返回错误信息的，而固定回复是固定的，不需要返回错误信息。
+
+```go filename="resp/reply/reply.go"
+// ErrorReply 错误回复，实现了 Reply 的 ToBytes 方法，也实现了系统的 error 接口
+// 这里使用了接口组合，将 error 接口和 Reply 接口组合在一起
+type ErrorReply interface {
+	Error() string
+	ToBytes() []byte
+}
+```
+
+接下来创建 `error.go` 文件，实现 `ErrorReply` 接口。
+
+例如，当用户输入的命令参数数量错误时，我们可以返回一个 `ArgNumErrReply` 错误回复。
+
+这里我们可以将用户输入的命令传入到结构体中，提示用户使用的哪个命令有问题。
+
+```go filename="resp/reply/error.go"
+// ArgNumErrReply 参数数量错误回复
+type ArgNumErrReply struct {
+	Cmd string // 提示用户使用的哪个命令有问题
+}
+
+func (r *ArgNumErrReply) Error() string {
+	return "ERR wrong number of arguments for '" + r.Cmd + "' command"
+}
+
+func (r *ArgNumErrReply) ToBytes() []byte {
+	return []byte("-ERR wrong number of arguments for '" + r.Cmd + "' command\r\n")
+}
+
+func MakeArgNumErrReply(cmd string) *ArgNumErrReply {
+	return &ArgNumErrReply{Cmd: cmd}
+}
+```
+
+接下来实现其他的异常回复。主要有：
+
+- `UnknownReply`：未知错误回复。当我们不知道错误是什么时，可以返回这个回复。
+- `SyntaxErrReply`：语法错误回复。当用户输入的命令有语法错误时，可以返回这个回复。
+- `WrongTypeErrReply`：类型错误回复。当用户对一个错误的数据类型执行操作时，可以返回这个回复。
+- `ProtocolErrReply`：协议错误回复。当用户输入的命令有协议错误时，例如对于数组需要 `*` 开头，对于字符串需要 `$` 开头，而用户没有遵守这个规则时，可以返回这个回复。
+
+
+```go filename="resp/reply/error.go"
+// UnknownReply 未知错误回复
+type UnknownReply struct{}
+
+func (r *UnknownReply) Error() string {
+	return "Unknown Error"
+}
+
+func (r *UnknownReply) ToBytes() []byte {
+	return []byte("-ERR unknown\r\n")
+}
+
+func MakeUnknownReply() *UnknownReply {
+	return &UnknownReply{}
+}
+
+// SyntaxErrReply 语法错误回复
+type SyntaxErrReply struct{}
+
+func (r *SyntaxErrReply) Error() string {
+	return "ERR syntax error"
+}
+
+func (r *SyntaxErrReply) ToBytes() []byte {
+	return []byte("-ERR syntax error\r\n")
+}
+
+func MakeSyntaxErrReply() *SyntaxErrReply {
+	return &SyntaxErrReply{}
+}
+
+// WrongTypeErrReply 类型错误回复
+type WrongTypeErrReply struct{}
+
+func (r *WrongTypeErrReply) Error() string {
+	return "WRONG TYPE Operation against a key holding the wrong kind of value"
+}
+
+func (r *WrongTypeErrReply) ToBytes() []byte {
+	return []byte("-WRONG TYPE Operation against a key holding the wrong kind of value\r\n")
+}
+
+func MakeWrongTypeErrReply() *WrongTypeErrReply {
+	return &WrongTypeErrReply{}
+}
+
+// ProtocolErrReply 协议错误回复
+type ProtocolErrReply struct {
+	Msg string
+}
+
+func (r *ProtocolErrReply) Error() string {
+	return "PROTOCOL ERROR: " + r.Msg
+}
+
+func (r *ProtocolErrReply) ToBytes() []byte {
+	return []byte("-PROTOCOL ERROR: " + r.Msg + "\r\n")
+}
+
+func MakeProtocolErrReply(msg string) *ProtocolErrReply {
+	return &ProtocolErrReply{Msg: msg}
+}
+```
+
+### 自定义回复
+
+在 Redis 中，我们可以自定义回复，比如我们可以返回一个字符串，一个整数，一个数组等等。
+
+首先在 `reply.go` 文件中定义一个 `BulkReply` 结构体，用于处理多行字符串回复。
+
+我们结构体中存储的是我们想要返回的字符串，然后实现 `Reply` 接口的 `ToBytes` 方法，将字符串转换为符合 RESP 协议的字节切片。
+
+```go filename="resp/reply/reply.go"
+// BulkReply 字符串回复
+type BulkReply struct {
+	Arg []byte // 回复的内容，此时是不符合 RESP 协议的
+}
+```
+
+接下来实现 `BulkReply` 结构体的 `ToBytes` 方法。
+
+```go filename="resp/reply/reply.go"
+func (r *BulkReply) ToBytes() []byte {
+	// 如果字符串为空，返回空字符串
+	if len(r.Arg) == 0 {
+		return nullBUlkReplyBytes
+	}
+	// 将 BulkReply 转换为符合 RESP 协议的字节数组
+	return []byte("$" + strconv.Itoa(len(r.Arg)) + CRLF + string(r.Arg) + CRLF)
+}
+
+func MakeBulkReply(arg []byte) *BulkReply {
+	return &BulkReply{Arg: arg}
+}
+```
+
+接下来实现字符串数组回复。
+
+主要思路是遍历数组，然后将数组中的每个字符串转换为 RESP 协议的字节切片。然后将这些字节切片拼接起来，返回。
+
+```go filename="resp/reply/reply.go"
+// MultiBulkReply 多个字符串回复
+type MultiBulkReply struct {
+	Args [][]byte
+}
+
+func (r *MultiBulkReply) ToBytes() []byte {
+	argLen := len(r.Args)
+	var buf bytes.Buffer
+	buf.WriteString("*" + strconv.Itoa(argLen) + CRLF)
+	for _, arg := range r.Args {
+		if arg == nil {
+			// *-1\r\n\r\n 表示空数组
+			buf.WriteString(string(nullBUlkReplyBytes) + CRLF)
+		} else {
+			// *3\r\n$3\r\nfoo\r\n$3\r\nbar\r\n$5\r\nhello\r\n
+			buf.WriteString("$" + strconv.Itoa(len(arg)) + CRLF + string(arg) + CRLF)
+		}
+	}
+	// 返回的内容是一个字节切片
+	return buf.Bytes()
+}
+
+func MakeMultiBulkReply(args [][]byte) *MultiBulkReply {
+	return &MultiBulkReply{Args: args}
+}
+```
+
+例如，我们有一个字符串数组 `["foo", "bar", "hello"]`：
+
+经过上述的处理，我们可以得到 RESP 协议的字节切片：
+
+```bash
+*3\r\n$3\r\nfoo\r\n$3\r\nbar\r\n$5\r\nhello\r\n
+```
+
+接下来分别实现：
+
+- `StandardErrorReply`：标准错误回复。当我们需要返回一个错误信息时，可以使用这个回复。
+- `IntReply`：整数回复。当我们需要返回一个整数时，可以使用这个回复。
+
+```go filename="resp/reply/reply.go"
+// StandardErrorReply 状态回复(通用错误回复)
+type StandardErrorReply struct {
+	Status string
+}
+
+func (r *StandardErrorReply) ToBytes() []byte {
+	return []byte("-" + r.Status + CRLF)
+}
+
+func MakeStandardErrorReply(status string) *StandardErrorReply {
+	return &StandardErrorReply{Status: status}
+}
+
+// IntReply 整数回复
+type IntReply struct {
+	Arg int
+}
+
+func (r *IntReply) ToBytes() []byte {
+	return []byte(":" + strconv.Itoa(r.Arg) + CRLF)
+}
+
+func MakeIntReply(arg int) *IntReply {
+	return &IntReply{Arg: arg}
+}
+```
+
+另外我们实现一个函数，`IsErrReply`，用于判断是否是错误回复。
+
+```go filename="resp/reply/reply.go"
+func IsErrReply(reply resp.Reply) bool {
+	return reply.ToBytes()[0] == '-'
+}
+```
+
+在这里我们规定，如果回复的第一个字符是 `-`，那么就是错误回复。这个函数留到后面使用。
+
+到目前为止，我们就实现了固定回复、异常回复、自定义回复。便于我们后续开发 Redis 服务器的时候，可以直接调用这些回复。
+
+## 解析客户端请求
+

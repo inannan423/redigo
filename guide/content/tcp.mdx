@@ -1,6 +1,8 @@
 import { FileTree } from "nextra/components";
 
-# 初始化项目
+# 创建一个 TCP 服务器
+
+> 本文进度对应的代码仓库：[TCP 服务创建](https://github.com/inannan423/redigo/tree/68db4d856f32bb03bc5336ae780129539815ea7f)
 
 在本文中，项目结构如下：
 
@@ -443,6 +445,8 @@ func MakeHandler() *EchoHandler {
 }
 ```
 
+> 这里实际上用到了设计模式中的“工厂模式”，虽然直接使用 `new(EchoHandler)` 也可以创建 `EchoHandler` 实例，但是使用 `MakeHandler` 函数可以更好地隐藏实现细节，提高代码的可维护性。例如，后续我们可能会修改 `EchoHandler` 的实现，如果直接使用 `new(EchoHandler)` 创建实例，那么所有调用 `new(EchoHandler)` 的地方都需要修改，而使用 `MakeHandler` 函数创建实例，只需要修改 `MakeHandler` 函数即可。
+
 然后创建 `EchoClient` 结构体，用于管理单个客户端连接。
 
 ```go filename="tcp/echo.go"
@@ -742,3 +746,11 @@ orange
 ## 总结
 
 这篇文章主要介绍了如何使用 Go 语言创建一个简单的 TCP 回显服务器。为后续我们的 Redis 服务器打下基础。
+
+## 提交到 GitHub
+
+```bash
+git add .
+git commit -m "feat: add echo server"
+git push
+```

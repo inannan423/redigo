@@ -43,7 +43,7 @@ export default async function RootLayout({ children }) {
           // banner={banner}
           navbar={navbar}
           pageMap={await getPageMap()}
-          docsRepositoryBase="https://github.com/inannan423/contentive/tree/main/documents"
+          docsRepositoryBase="https://github.com/inannan423/redigo/tree/main/guide"
           footer={footer}
         >
           {children}
