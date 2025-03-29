@@ -5,8 +5,8 @@ import (
 	"os"
 	"redigo/config"
 	"redigo/lib/logger"
+	"redigo/resp/handler"
 	"redigo/tcp"
-	EchoHandler "redigo/tcp"
 )
 
 const configFile string = "redis.conf"
@@ -41,7 +41,7 @@ func main() {
 				config.Properties.Bind,
 				config.Properties.Port),
 		},
-		EchoHandler.MakeHandler())
+		handler.MakeHandler())
 	if err != nil {
 		logger.Error(err)
 	}
