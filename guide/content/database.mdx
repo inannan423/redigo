@@ -1,3 +1,5 @@
+import { Callout } from 'nextra/components'
+
 # Redis 内存数据库
 
 > 本文进度对应的代码仓库：[Redis 内存数据库](https://github.com/inannan423/redigo/tree/database)
@@ -5,4 +7,451 @@
 在前面的章节中，我们先是实现了一个简单的 TCP 服务器，然后又实现了一个简单的 RESP 解析器。
 在这一章中，我们将实现一个 Redis 内存数据库。
 
+## 创建接口
 
+首先我们要创建一个 `Dict` 接口，表示一个字典。Redis 中的 Dict 结构提供了对键值对的基本操作（如获取、添加、删除等）。以及一些高级功能，如迭代器、随机返回键等。
+
+使用接口来抽象化 Dict 的实现，可以让我们在后续的实现中更容易地替换底层的数据结构。而不用影响到上层的逻辑。
+
+例如下面我们将使用 `sync.Map` 来实现 Dict。但是未来我们可能会使用其他的数据结构来实现 Dict，比如 `hashmap`、`skiplist` 等等。使用接口可以让我们在不修改上层逻辑的情况下，轻松地替换底层的数据结构。
+
+首先在根目录下创建一个 `datastruct` 目录，专门用来存放数据结构的实现。然后在 `datastruct` 目录下创建一个 `dict` 目录，专门用来存放 Dict 的实现。最后在 `dict` 目录下创建一个 `dict.go` 文件，专门用来存放 Dict 的接口定义。
+
+```go filename="datastruct/dict/dict.go"
+package dict
+
+type Consumer func(key string, val interface{}) // function type for iterating over key-value pairs
+
+type Dict interface {
+	Get(key string) (val interface{}, exists bool)        // get value by key, return the value and a boolean indicating if the key exists
+	Len() int                                             // get the number of key-value pairs
+	Put(key string, val interface{}) (result int)         // put key-value pair, if exists, modify the value, return 0, if doesn't exist, add it, return 1
+	PutIfAbsent(key string, val interface{}) (result int) // put key-value pair if absent, return 0, if exists, return 1
+	PutIfExists(key string, val interface{}) (result int) // put key-value pair if exists, return 0, if absent, return 1
+	Remove(key string) (result int)                       // remove key-value pair, return the count of pairs
+	ForEach(consumer Consumer)                            // iterate over all key-value pairs
+	Keys() []string                                       // get all keys
+	RandomKeys(n int) []string                            // get n random keys
+	RandomDistinctKeys(n int) []string                    // get n distinct random keys
+	clear()                                               // clear all key-value pairs
+}
+```
+
+在这里我们定义了 Redis 中数据结构常用的一些方法：
+
+- `Get(key string) (val interface{}, exists bool)`：根据键获取值，如果键存在则返回值和 true，否则返回 nil 和 false。
+- `Len() int`：获取键值对的数量。
+- `Put(key string, val interface{}) (result int)`：添加键值对，如果键已经存在，则覆盖原有的值，返回 0；如果键不存在，则添加键值对，返回 1。也就是说如果键已经存在，则不添加键值对但是进行值的修改。
+- `PutIfAbsent(key string, val interface{}) (result int)`：添加键值对，如果键已经存在，则不覆盖原有的值，返回 0；如果键不存在，则添加键值对，返回 1。
+- `PutIfExists(key string, val interface{}) (result int)`：添加键值对，如果键不存在，则不添加键值对。也就是说仅仅在键存在时才添加键值对。
+- `Remove(key string) (result int)`：删除键值对，返回键值对的数量。
+- `ForEach(consumer Consumer)`：遍历所有的键值对，consumer 是一个函数类型，用来处理每一个键值对。它允许用户在遍历时自定义处理逻辑。
+
+例如，我们可以在遍历时打印每一个键值对：
+
+```go
+func printKeyValue(key string, val interface{}) {
+    fmt.Printf("key: %s, value: %v\n", key, val)
+}
+
+// 使用 ForEach 方法遍历所有的键值对
+dict.ForEach(printKeyValue)
+```
+
+- `Keys() []string`：获取所有的键，返回一个字符串切片。
+- `RandomKeys(n int) []string`：获取 n 个随机键，返回一个字符串切片。
+- `RandomDistinctKeys(n int) []string`：获取 n 个不重复的随机键，返回一个字符串切片。
+- `clear()`：清空所有的键值对。这是一个包内方法，不可被外部调用。
+
+接下来我们就需要去分别完成 Dict 接口的具体实现。
+
+## 实现 SyncDict
+
+在 `datastruct/dict` 目录下创建一个 `sync_dict.go` 文件，用于实现一个线程安全的 Dict。我们使用 Go 的内置 `sync.Map` 来实现这个 Dict。`sync.Map` 是一个并发安全的 map，它提供了原子操作的方法，可以在多个 goroutine 中安全地使用。
+
+<Callout>
+`sync.Map` 是 Go 语言标准库中的一个并发安全的 map 实现。`sync.Map` 主要用于在高并发场景下共享数据，比如缓存、频繁读写的共享状态等。
+
+Go 原生的 `map` 不是并发安全的，如果多个 `goroutine` 同时读写同一个 map，会导致 `fatal error: concurrent map read and map write` 的运行时错误。
+
+所以我们需要使用 `sync.Map` 来实现一个线程安全的 Dict。
+
+为什么 Redis 中需要一个线程安全的 Dict 呢？因为 Redis 是一个单线程的数据库，它使用事件驱动模型来处理请求。虽然 Redis 是单线程的，但是它的底层数据结构是可以被多个线程同时访问的。所以我们需要一个线程安全的 Dict 来保证数据的一致性和安全性。
+
+`sync.Map` 的实现原理是使用了读写锁（`sync.RWMutex`）来保护 map 的读写操作。它的读操作是并发安全的，而写操作是互斥的。这就保证了在高并发场景下，读操作不会阻塞其他的读操作，而写操作会阻塞其他的读写操作。
+</Callout>
+
+加下来我们开始对 `Dict` 接口进行实现。首先实现一个 `MakeSyncDict` 函数，用于创建一个新的 `SyncDict` 实例。这个函数会返回一个实现了 `Dict` 接口的 `SyncDict` 实例。
+
+```go filename="datastruct/dict/sync_dict.go"
+// MakeSyncDict creates a new SyncDict instance
+func MakeSyncDict() *SyncDict {
+	return &SyncDict{}
+}
+```
+
+### Get
+
+然后实现 `Get` 方法，用于根据键获取值。如果键存在，则返回值和 true，否则返回 nil 和 false。
+
+```go filename="datastruct/dict/sync_dict.go"
+// Get returns the value associated with the given key and a boolean indicating if the key exists
+func (dict *SyncDict) Get(key string) (val interface{}, exists bool) {
+	// Get the value by key
+	if value, ok := dict.m.Load(key); ok {
+		return value, true
+	}
+	return nil, false
+}
+```
+
+这个方法是在对 `Dict` 接口中的 Get 方法进行实现，而在 Go 中，鸭子类型告诉我们，只要一个类型实现了某个接口的方法，那么这个类型就可以被视为这个接口的实现。
+
+由于我们直接使用了 `sync.Map` ，所以获取值方法实际上就是从 `sync.Map` 中获取值。我们使用 `Load` 方法来获取值。`Load` 方法会返回一个值和一个布尔值，表示键是否存在。
+
+### Len
+
+接下来实现 `Len` 方法，用于获取键值对的数量。但是 `sync.Map` 并没有提供直接获取长度的方法。我们需要使用 `Range` 方法来遍历所有的键值对，然后统计数量。
+
+```go filename="datastruct/dict/sync_dict.go"
+// Len returns the number of key-value pairs in the dictionary
+func (dict *SyncDict) Len() int {
+	count := 0
+	// Iterate over all key-value pairs and count them
+	dict.m.Range(func(key, value interface{}) bool {
+		count++
+		return true
+	})
+	return count
+}
+```
+
+在这里我们使用 `Range` 方法来遍历所有的键值对。`Range` 方法会调用一个函数，传入每一个键值对。我们在这个函数中统计数量。
+
+### Put
+
+接下来实现 `Put` 方法，用于添加键值对。如果键已经存在，则覆盖原有的值，返回 0；如果键不存在，则添加键值对，返回 1。也就是说如果键已经存在，则不添加键值对但是进行值的修改。
+
+```go filename="datastruct/dict/sync_dict.go"
+// Put adds a key-value pair to the dictionary, if the key already exists, return 1 else 0
+func (dict *SyncDict) Put(key string, val interface{}) (result int) {
+	_, exists := dict.m.Load(key)
+	// Store the key-value pair
+	dict.m.Store(key, val)
+	// Return the count of pairs
+	if exists {
+		return 0
+	}
+	return 1
+}
+```
+
+在这里我们使用 `Store` 方法来添加键值对。`Store` 方法会覆盖原有的值。我们只需要判断键是否存在，然后返回 0 或 1 即可。
+
+<Callout>
+**为啥这里要返回 0 或 1 呢？**
+
+这种设计遵循了 Redis 的命令返回值约定。返回值告诉调用者该操作是更新了一个已存在的键（返回0）还是创建了一个新键（返回1）。这些返回值常用于统计操作影响的键数量，例如在批量操作中跟踪修改的总数。调用者可以根据返回值执行不同的后续操作。
+</Callout>
+
+### PutIfAbsent 和 PutIfExists
+
+接下来实现 `PutIfAbsent` 和 `PutIfExists` 方法。`PutIfAbsent` 方法用于仅在键不存在时添加键值对，`PutIfExists` 方法用于仅在键存在时添加键值对。我们可以使用 `Load` 方法来判断键是否存在。然后使用 `Store` 方法来添加键值对。
+
+```go filename="datastruct/dict/sync_dict.go"
+// PutIfAbsent adds a key-value pair to the dictionary if the key does not exist, return 1 if it exists, else 0
+func (dict *SyncDict) PutIfAbsent(key string, val interface{}) (result int) {
+	_, exists := dict.m.Load(key)
+	if exists {
+		return 0
+	}
+	// Store the key-value pair
+	dict.m.Store(key, val)
+	return 1
+}
+
+// PutIfExists adds a key-value pair to the dictionary if the key exists, return 1 if it does not exist, else 0
+func (dict *SyncDict) PutIfExists(key string, val interface{}) (result int) {
+	_, exists := dict.m.Load(key)
+	if !exists {
+		return 0
+	}
+	// Store the key-value pair
+	dict.m.Store(key, val)
+	return 1
+}
+```
+
+### Remove
+
+接下来实现 `Remove` 方法，用于删除键值对。我们可以使用 `Load` 方法来判断键是否存在。然后使用 `Delete` 方法来删除键值对。
+
+```go filename="datastruct/dict/sync_dict.go"
+// Remove removes a key-value pair from the dictionary, return the count of pairs were removed
+func (dict *SyncDict) Remove(key string) (result int) {
+	_, exists := dict.m.Load(key)
+	if !exists {
+		return 0
+	}
+	// Delete the key-value pair
+	dict.m.Delete(key)
+	return 1
+}
+```
+
+### ForEach
+
+接下来实现 `ForEach` 方法，用于遍历所有的键值对。我们可以使用 `sync.Map` 的 `Range` 方法来遍历所有的键值对。我们在遍历时调用传入的函数来处理每一个键值对。
+
+```go filename="datastruct/dict/sync_dict.go"
+// ForEach iterates over all key-value pairs in the dictionary and applies the consumer function to each pair
+func (dict *SyncDict) ForEach(consumer Consumer) {
+	// Iterate over all key-value pairs and apply the consumer function
+	dict.m.Range(func(key, value interface{}) bool {
+		consumer(key.(string), value)
+		// Always return true to continue iteration
+		return true
+	})
+}
+```
+
+### Keys
+
+接下来实现 `Keys` 方法，用于获取所有的键。我们可以使用 `Range` 方法来遍历所有的键值对，然后将键添加到一个切片中，最后返回这个切片。
+
+```go filename="datastruct/dict/sync_dict.go"
+// Keys returns a slice of all keys in the dictionary
+func (dict *SyncDict) Keys() []string {
+	keys := make([]string, dict.Len())
+	// Iterate over all key-value pairs and collect the keys
+	dict.m.Range(func(key, value interface{}) bool {
+		keys = append(keys, key.(string))
+		return true
+	})
+	return keys
+}
+```
+
+### RandomKeys
+
+实现 `RandomKeys` 方法，用于获取 n 个随机键，返回一个字符串切片。
+
+我们可以利用 `sync.Map` 的 `Range` 方法不保证迭代顺序的特性来实现这个方法。我们进行 n 次选择，每次随机选择一个键。由于 `Range` 方法不保证迭代顺序，所以我们可以在每次迭代时随机选择一个键。
+
+但是这样可能会导致重复的键被返回，不过这个接口不做唯一性的保证，所以我们可以直接返回结果。
+
+```go filename="datastruct/dict/sync_dict.go"
+// RandomKeys returns a slice of n random keys from the dictionary
+// Due to m.Range doesn't guarantee the order of iteration, we can use this feature to get random keys
+// Note: This method may not be truly random, but it will give different keys each time
+// Duplicate keys may be returned
+func (dict *SyncDict) RandomKeys(n int) []string {
+	keys := make([]string, dict.Len())
+	for i := 0; i < n; i++ {
+		// Randomly select a key from the dictionary
+		dict.m.Range(func(key, value interface{}) bool {
+			keys = append(keys, key.(string))
+			return false
+		})
+	}
+	return keys
+}
+```
+
+### RandomDistinctKeys
+
+
+在这里我们使用 `Range` 方法来遍历所有的键值对。设置一个计数器 `i` 来统计已经收集到的键的数量。当收集到 n 个键时，停止迭代。我们使用一个切片来存储收集到的键。
+
+```go filename="datastruct/dict/sync_dict.go"
+// RandomDistinctKeys returns a slice of n distinct random keys from the dictionary
+func (dict *SyncDict) RandomDistinctKeys(n int) []string {
+	result := make([]string, dict.Len())
+
+	i := 0
+
+	// Iterate over all key-value pairs and collect the keys
+	dict.m.Range(func(key, value interface{}) bool {
+		result[i] = key.(string)
+		i++
+		return i != n
+	})
+	return result
+}
+```
+
+### Clear
+
+
+在这里我们使用 `*dict = *MakeSyncDict()` 来清空所有的键值对。`MakeSyncDict` 函数会返回一个新的 `SyncDict` 实例。我们将当前的 `dict` 指向这个新的实例，从而实现清空所有的键值对。
+
+```go filename="datastruct/dict/sync_dict.go"
+// clear clears all key-value pairs in the dictionary
+func (dict *SyncDict) clear() {
+	*dict = *MakeSyncDict()
+}
+```
+
+旧的去哪里了呢？在 Go 中，垃圾回收器会自动回收不再使用的内存。所以我们不需要手动去清理旧的实例。只要没有其他的引用指向这个实例，它就会被自动回收。
+
+## DB
+
+刚刚我们实现的这个 `SyncDict` 是在 Redis 最底层工作的数据结构。接下来我们需要实现一个 `DB` 结构体，用于表示 Redis 数据库。这个结构体会包含一个 `SyncDict` 实例，用于存储数据。
+
+我们在之前创建的 `database` 目录下创建一个 `db.go` 文件，用于存放 `DB` 结构体的实现。
+
+```go filename="database/db.go"
+type DB struct {
+	index int
+	data  dict.Dict
+}
+
+// MakeDB creates a new DB instance
+func MakeDB() *DB {
+	return &DB{
+		index: 0,
+		data:  dict.MakeSyncDict(),
+	}
+}
+```
+
+在这里我们定义了一个 `DB` 结构体，它包含一个 `index` 字段和一个 `data` 字段。`index` 字段用于表示数据库的索引，`data` 字段用于存储数据。我们使用 `MakeDB` 函数来创建一个新的 `DB` 实例。
+
+接下来，我们需要实现一个 `ExecFunc` 函数类型，用于表示一个执行函数。这个函数类型接收一个 `DB` 实例和一个字节切片作为参数，返回一个 `resp.Reply`。所有的 Redis 命令（如 PING、SET、GET 等）都要用这个函数类型来实现。
+
+这样有助于所有命令处理函数共享相同的签名，便于上层调用代码统一处理各种命令。
+
+```go filename="database/db.go"
+// ExecFunc is a function type that takes a DB instance and a slice of byte slices as arguments and returns a resp.Reply
+// All redis commands like PING, SET, GET, etc. are implemented as functions of this type
+type ExecFunc func(db *DB, args [][]byte) resp.Reply
+```
+
+然后我们需要实现一个 `CmdLine` 类型，用于表示命令行参数。这个类型是一个字节切片的切片，用于表示命令行参数。我们在这里使用 `CmdLine` 来表示命令行参数，而不是直接使用 `[][]byte`，是为了更好地表达语义。
+
+```go filename="database/db.go"
+// CmdLine is a type alias for a slice of byte slices
+// It is used to represent the command line arguments passed to the ExecFunc
+type CmdLine = [][]byte
+```
+
+为什么这里使用 `[][]byte` 而不是 `string` 呢？因为 Redis 的命令行参数是二进制安全的。也就是说，命令行参数可以包含任意的字节序列，包括空字节和非 UTF-8 编码的字节序列。[]byte 可以安全地存储任何二进制数据，包括包含零值(null字符)的数据。而 string 在某些场景下可能会被截断或错误地解析二进制数据。
+
+接下来我们应当实现一个 `Exec` 方法，用于执行命令。这个方法接收一个 `CmdLine` 和一个 `ExecFunc`，返回一个 `resp.Reply`。
+
+这样的话我们需要在 `Exec` 方法中分辨命令类型，例如 PING、SET、GET 等等。但是这样的设计模式会导致代码的可读性和可维护性降低。
+
+在 `database` 目录下创建一个 `command.go` 文件，用于存放命令的实现。我们将所有的命令都放在这个文件中。这样可以避免在 `db.go` 中出现大量的 if-else 语句，从而提高代码的可读性和可维护性。
+
+创建一个中央注册表（cmdTable），用于存储所有支持的命令及其实现。command 结构包含：
+
+- `exec`：命令的实际执行函数（类型为 ExecFunc）
+- `arity`：命令所需的参数数量（用于验证命令参数是否正确）
+
+创建一个 `RegisterCommand` 函数用于注册新命令，将命令名转为小写（使命令大小写不敏感）并存入表中。
+
+这是经典的命令模式（Command Pattern）的实现，为整个 Redis 克隆提供了良好的可维护性和可扩展性。
+
+```go filename="database/command.go"
+package database
+
+import "strings"
+
+// cmdTable is a map that associates command names (as strings) with their corresponding command structures
+var cmdTable = make(map[string]*command)
+
+type command struct {
+	exec  ExecFunc // function to execute the command
+	arity int      // number of arguments required for the command
+}
+
+// RegisterCommand registers a command with the command table
+func RegisterCommand(name string, exec ExecFunc, arity int) {
+	name = strings.ToLower(name)
+	cmdTable[name] = &command{
+		exec:  exec,
+		arity: arity,
+	}
+}
+```
+
+<Callout>
+**命令模式**
+
+命令模式（Command Pattern）是一种行为型设计模式，它的核心思想是：“将请求封装成对象，使你可以用不同的请求对客户进行参数化。”
+
+也就是说，你可以把对某个操作的调用、参数、接收者（执行者）等打包成一个对象，然后延迟执行、存储、排队、撤销等——就像在做命令行操作一样。
+
+想象你在点外卖：
+
+- 你（客户端）把要点的东西告诉服务员（调用者）
+
+- 服务员把你的订单写在纸上（封装成命令对象）
+
+- 后厨（接收者）根据订单来做菜（执行命令）
+
+命令对象起到中间层的作用，把“发出命令的人”与“执行命令的人”解耦了。
+
+一个例子：
+
+```go
+type Command interface {
+    Execute()
+}
+
+type Light struct{}
+
+func (l *Light) On() {
+    fmt.Println("Light is ON")
+}
+
+func (l *Light) Off() {
+    fmt.Println("Light is OFF")
+}
+
+type LightOnCommand struct {
+    light *Light
+}
+
+func (c *LightOnCommand) Execute() {
+    c.light.On()
+}
+
+type LightOffCommand struct {
+    light *Light
+}
+
+func (c *LightOffCommand) Execute() {
+    c.light.Off()
+}
+
+type RemoteControl struct {
+    command Command
+}
+
+func (r *RemoteControl) SetCommand(command Command) {
+    r.command = command
+}
+
+func (r *RemoteControl) PressButton() {
+    r.command.Execute()
+}
+
+func main() {
+    light := &Light{}
+    lightOn := &LightOnCommand{light}
+    lightOff := &LightOffCommand{light}
+
+    remote := &RemoteControl{}
+
+    remote.SetCommand(lightOn)
+    remote.PressButton() // Output: Light is ON
+
+    remote.SetCommand(lightOff)
+    remote.PressButton() // Output: Light is OFF
+}
+```
+
+这个例子中，`Command` 接口定义了一个 `Execute` 方法，`Light` 类表示一个灯，`LightOnCommand` 和 `LightOffCommand` 分别表示打开和关闭灯的命令。`RemoteControl` 类用于设置命令并执行它们。
+这样，我们就可以通过命令对象来控制灯的开关，而不需要直接操作灯的对象。命令模式使得请求的发送者和接收者解耦，提高了代码的可扩展性和可维护性。
+</Callout>
