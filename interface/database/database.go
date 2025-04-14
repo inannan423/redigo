@@ -2,10 +2,10 @@ package database
 
 import "redigo/interface/resp"
 
-// CmdLine 是 [][]byte 类型的别名,方便使用
+// CmdLine is a type alias for a slice of byte slices
 type CmdLine = [][]byte
 
-// Database 是数据库接口，定义了数据库的基本操作
+// Database is an interface that defines the methods for a database
 type Database interface {
 	Exec(client resp.Connection, args [][]byte) resp.Reply
 	AfterClientClose(c resp.Connection)

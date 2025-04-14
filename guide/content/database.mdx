@@ -20,7 +20,7 @@ import { Callout } from 'nextra/components'
 ```go filename="datastruct/dict/dict.go"
 package dict
 
-type Consumer func(key string, val interface{}) // function type for iterating over key-value pairs
+type Consumer func(key string, val interface{}) bool // function type for iterating over key-value pairs
 
 type Dict interface {
 	Get(key string) (val interface{}, exists bool)        // get value by key, return the value and a boolean indicating if the key exists
@@ -33,7 +33,7 @@ type Dict interface {
 	Keys() []string                                       // get all keys
 	RandomKeys(n int) []string                            // get n random keys
 	RandomDistinctKeys(n int) []string                    // get n distinct random keys
-	clear()                                               // clear all key-value pairs
+	Clear()                                               // clear all key-value pairs
 }
 ```
 
@@ -61,7 +61,7 @@ dict.ForEach(printKeyValue)
 - `Keys() []string`：获取所有的键，返回一个字符串切片。
 - `RandomKeys(n int) []string`：获取 n 个随机键，返回一个字符串切片。
 - `RandomDistinctKeys(n int) []string`：获取 n 个不重复的随机键，返回一个字符串切片。
-- `clear()`：清空所有的键值对。这是一个包内方法，不可被外部调用。
+- `Clear()`：清空所有的键值对。这是一个包内方法，不可被外部调用。
 
 接下来我们就需要去分别完成 Dict 接口的具体实现。
 
@@ -286,8 +286,8 @@ func (dict *SyncDict) RandomDistinctKeys(n int) []string {
 在这里我们使用 `*dict = *MakeSyncDict()` 来清空所有的键值对。`MakeSyncDict` 函数会返回一个新的 `SyncDict` 实例。我们将当前的 `dict` 指向这个新的实例，从而实现清空所有的键值对。
 
 ```go filename="datastruct/dict/sync_dict.go"
-// clear clears all key-value pairs in the dictionary
-func (dict *SyncDict) clear() {
+// Clear clears all key-value pairs in the dictionary
+func (dict *SyncDict) Clear() {
 	*dict = *MakeSyncDict()
 }
 ```
@@ -295,6 +295,8 @@ func (dict *SyncDict) clear() {
 旧的去哪里了呢？在 Go 中，垃圾回收器会自动回收不再使用的内存。所以我们不需要手动去清理旧的实例。只要没有其他的引用指向这个实例，它就会被自动回收。
 
 ## DB
+
+### 创建 DB 结构体
 
 刚刚我们实现的这个 `SyncDict` 是在 Redis 最底层工作的数据结构。接下来我们需要实现一个 `DB` 结构体，用于表示 Redis 数据库。这个结构体会包含一个 `SyncDict` 实例，用于存储数据。
 
@@ -316,6 +318,8 @@ func MakeDB() *DB {
 ```
 
 在这里我们定义了一个 `DB` 结构体，它包含一个 `index` 字段和一个 `data` 字段。`index` 字段用于表示数据库的索引，`data` 字段用于存储数据。我们使用 `MakeDB` 函数来创建一个新的 `DB` 实例。
+
+### ExecFunc 和 CmdLine
 
 接下来，我们需要实现一个 `ExecFunc` 函数类型，用于表示一个执行函数。这个函数类型接收一个 `DB` 实例和一个字节切片作为参数，返回一个 `resp.Reply`。所有的 Redis 命令（如 PING、SET、GET 等）都要用这个函数类型来实现。
 
@@ -339,9 +343,11 @@ type CmdLine = [][]byte
 
 接下来我们应当实现一个 `Exec` 方法，用于执行命令。这个方法接收一个 `CmdLine` 和一个 `ExecFunc`，返回一个 `resp.Reply`。
 
-这样的话我们需要在 `Exec` 方法中分辨命令类型，例如 PING、SET、GET 等等。但是这样的设计模式会导致代码的可读性和可维护性降低。
+这样的话我们需要在 `Exec` 方法中分辨命令类型，例如 PING、SET、GET 等等。但是这样的设计模式会导致代码中出现大量的 if-else 语句，导致代码的可读性和可维护性下降。
 
-在 `database` 目录下创建一个 `command.go` 文件，用于存放命令的实现。我们将所有的命令都放在这个文件中。这样可以避免在 `db.go` 中出现大量的 if-else 语句，从而提高代码的可读性和可维护性。
+### 使用命令模式
+
+所以我们可以考虑使用命令模式，在 `database` 目录下创建一个 `command.go` 文件，用于存放命令的实现。我们将所有的命令都放在这个文件中。这样可以避免在 `db.go` 中出现大量的 if-else 语句，从而提高代码的可读性和可维护性。
 
 创建一个中央注册表（cmdTable），用于存储所有支持的命令及其实现。command 结构包含：
 
@@ -455,3 +461,1008 @@ func main() {
 这个例子中，`Command` 接口定义了一个 `Execute` 方法，`Light` 类表示一个灯，`LightOnCommand` 和 `LightOffCommand` 分别表示打开和关闭灯的命令。`RemoteControl` 类用于设置命令并执行它们。
 这样，我们就可以通过命令对象来控制灯的开关，而不需要直接操作灯的对象。命令模式使得请求的发送者和接收者解耦，提高了代码的可扩展性和可维护性。
 </Callout>
+
+### 命令调用函数
+
+上面的 `cmdTable` 有待补充，我们先我们回到 `db.go` 文件中，实现一个 `Exec` 方法，用于执行命令。主要作用是处理和执行客户端发来的命令。
+
+- 根据命令名称从 `cmdTable` 中获取对应的命令结构体
+- 检查命令参数的数量是否符合要求
+- 调用命令的执行函数，并返回执行结果
+
+这里我们需要把 `cmdLine` 的第一个元素转换为小写字母，以确保命令名称的可识别性。然后我们从 `cmdTable` 中获取对应的命令结构体。如果命令不存在，则返回一个错误回复。
+
+有的命令的参数是可变的，我们将可变参数的命令的 arity 设置为负数。比如 `DEL` 命令可以删除多个键，所以它的 arity 是 -1。我们在这里使用 `ValidateArity` 函数来验证命令参数的数量是否符合要求。
+
+- 对于像 `SET key value` 这样需要固定 2 个参数的命令，arity 为正数 2
+- 对于像 `RPUSH key value1 [value2 value3 ...]` 这样至少需要 2 个参数但可接受更多参数的命令，arity 为负数 -2
+
+```go filename="database/db.go"
+// Exec executes a command on the DB instance
+// It takes a connection and a command line as arguments
+// It returns a resp.Reply which is the response to the command
+func (db *DB) Exec(c resp.Connection, cmdLine CmdLine) resp.Reply {
+	// The first element of cmdLine is the command name, like "PING", "SET", etc.
+	// Convert it to lowercase to ensure case-insensitivity
+	cmdName := strings.ToLower(string(cmdLine[0]))
+	// Get the command from the command table using the command name
+	// If the command is not found, return an error reply
+	cmd, ok := cmdTable[cmdName]
+	if !ok {
+		return reply.MakeStandardErrorReply("ERR unknown command '" + cmdName + "'")
+	}
+	// Validate the number of arguments passed to the command
+	if !ValidateArity(cmd.arity, cmdLine) {
+		return reply.MakeArgNumErrReply(cmdName)
+	}
+	// Execute the command and return the response
+	return cmd.exec(db, cmdLine[1:])
+}
+
+// ValidateArity checks if the number of arguments passed to a command is valid
+func ValidateArity(arity int, args [][]byte) bool {
+	// Check if the number of arguments is less than the required arity
+	if arity >= 0 {
+		return len(args) == arity
+	} else {
+		// If the arity is negative, it means the command takes a variable number of arguments
+		// Check if the number of arguments is within the valid range
+		return len(args) >= -arity
+	}
+}
+```
+
+### 实现 PING 命令
+
+接下来我们就开始实现 Redis 的命令。我们先从最简单的 PING 命令开始实现。PING 命令用于测试服务器是否在线。它的返回值是 PONG。
+
+在 `database` 目录下创建一个 `ping.go` 文件，用于存放 PING 命令的实现。
+
+我们在前面的章节中已经实现了一个 `MakePongReply` 函数，用于返回 PONG 回复。我们在这里直接使用这个函数来实现 PING 命令。
+
+```go filename="database/ping.go"
+package database
+
+import (
+	"redigo/interface/resp"
+	"redigo/resp/reply"
+)
+
+func Ping(db *DB, args [][]byte) resp.Reply {
+	return reply.MakePongReply()
+}
+```
+
+然后我们可以在当前文件中使用 `init` 函数来注册 PING 命令。`init` 函数是 Go 语言中的一个特殊函数，它会在包被导入时自动执行。我们可以在这个函数中注册 PING 命令。
+
+```go filename="database/ping.go"
+// Register the PING command to the command table
+func init() {
+	// Register the PING command with the command table
+	RegisterCommand("ping", Ping, 1)
+}
+```
+
+### 数据库层面的操作
+
+在开始实现之前，我们定义一些数据库层面的操作。
+
+它们主要是对我们之前定义的底层 `dict` 的封装。
+
+包含：
+
+- `GetEntity`：获取数据实体
+- `PutEntity`：存储数据实体
+- `PutIfExists`：如果存在则存储数据实体
+- `PutIfAbsent`：如果不存在则存储数据实体
+- `Remove`：删除数据实体
+- `Removes`：删除多个数据实体
+- `Flush`：清空数据库
+
+```go filename="database/db.go"
+// GetEntity returns DataEntity bind to the given key
+func (db *DB) GetEntity(key string) (*database.DataEntity, bool) {
+	raw, ok := db.data.Get(key)
+	if !ok {
+		return nil, false
+	}
+	entity, _ := raw.(*database.DataEntity)
+	return entity, true
+}
+
+// PutEntity stores the given DataEntity in the database
+func (db *DB) PutEntity(key string, entity *database.DataEntity) int {
+	return db.data.Put(key, entity)
+}
+
+// PutIfExists edit the given DataEntity in the database
+func (db *DB) PutIfExists(key string, entity *database.DataEntity) int {
+	return db.data.PutIfExists(key, entity)
+}
+
+// PutIfAbsent stores the given DataEntity in the database if it doesn't already exist
+func (db *DB) PutIfAbsent(key string, entity *database.DataEntity) int {
+	return db.data.PutIfAbsent(key, entity)
+}
+
+// Remove deletes the DataEntity associated with the given key from the database
+func (db *DB) Remove(key string) int {
+	return db.data.Remove(key)
+}
+
+// Removes deletes the DataEntity associated with the given keys from the database
+func (db *DB) Removes(keys ...string) int {
+	deleted := 0
+	for _, key := range keys {
+		_, ok := db.data.Get(key)
+		if ok {
+			db.data.Remove(key)
+			deleted++
+		}
+	}
+	return deleted
+}
+
+// Flush clears the database by removing all DataEntity objects
+func (db *DB) Flush() {
+	db.data.Clear()
+}
+```
+
+这里我们得把之前的 `clear` 方法改为 `Clear`，便于包外访问：
+
+```go filename="datastruct/dict/sync_dict.go"
+// Clear clears all key-value pairs in the dictionary
+func (dict *SyncDict) Clear() {
+	*dict = *MakeSyncDict()
+}
+```
+
+在 `datastruct/dict/dict.go` 中也要把接口中的 `clear` 方法改为 `Clear`，便于包外访问：
+
+```go filename="datastruct/dict/dict.go"
+type Dict interface {
+	// ... other methods
+	Clear()                                               // clear all key-value pairs
+}
+```
+
+### 实现 KEYS 命令集
+
+接下来我们实现 `KEYS` 命令集。`KEYS` 命令用于查找所有符合给定模式的键。它的返回值是一个字符串切片，表示所有符合条件的键。
+
+在 Redis 中，Keys 有下面的常见的一些指令：
+
+- `DEL key1 key2 ...`：删除一个或多个键
+- `EXISTS key1 key2 ...`：检查一个或多个键是否存在
+- `FLUSHDB`：删除当前数据库中的所有键
+- `TYPE key`：返回键的类型
+- `RENAME key1 key2`：重命名键
+- `RENAMENX key1 key2`：重命名键，如果新键已经存在，则不执行重命名
+
+在这里我们先就实现这几个命令。我们在 `database` 目录下创建一个 `keys.go` 文件，用于存放 `KEYS` 命令的实现。
+
+#### DEL
+
+在 Redis 中，`DEL` 命令用于删除一个或多个键。它的返回值是被删除的键的数量。
+
+示例：
+
+假设我们有下面的键值对：
+
+```
+SET key1 value1
+SET key2 value2
+SET key3 value3
+```
+
+如果我们执行 `DEL key1 key2` 命令，则返回值为 2，因为我们删除了两个键。
+
+我们在 `keys.go` 文件中实现 `Del` 函数，实现思路很简单，我们遍历所有的键，然后调用 `db.Remove` 方法来删除键。最后返回被删除的键的数量。
+
+```go filename="database/keys.go"
+// Handle the DEL command
+// It deletes the specified keys from the database
+func execDel(db *DB, args [][]byte) resp.Reply {
+	keys := make([]string, len(args))
+	for i, arg := range args {
+		keys[i] = string(arg)
+	}
+	deleted := db.Removes(keys...)
+	return reply.MakeIntReply(int64(deleted))
+}
+```
+
+然后我们在 `keys.go` 文件中使用 `init` 函数来注册 `DEL` 命令。`DEL` 接受的是可变参数，所以它的 arity 是 -2。
+
+```go filename="database/keys.go"
+func init() {
+	RegisterCommand("DEL", execDel, -2)
+}
+```
+
+#### EXISTS
+
+在 Redis 中，`EXISTS` 命令用于检查一个或多个键是否存在。它的返回值是一个整数，表示存在的键的数量。
+
+使用示例：
+
+假设还是上面的三个键值对，我们执行 `EXISTS key1 key2` 命令，则返回值为 2，因为 `key1` 和 `key2` 都存在。
+
+我们在 `keys.go` 文件中实现 `Exists` 函数，遍历所有的键，然后调用 `db.GetEntity` 方法来检查键是否存在。最后返回存在的键的数量。
+
+```go filename="database/keys.go"
+func execExists(db *DB, args [][]byte) resp.Reply {
+	result := int64(0)
+	for _, arg := range args {
+		key := string(arg)
+		if _, ok := db.GetEntity(key); ok {
+			result++
+		}
+	}
+	return reply.MakeIntReply(result)
+}
+```
+
+然后我们在 `keys.go` 文件中使用 `init` 函数来注册 `EXISTS` 命令。`EXISTS` 接受的是可变参数，所以它的 arity 是 -2。
+
+```go filename="database/keys.go"
+func init() {
+	// ...
+	RegisterCommand("EXISTS", execExists, -2)
+}
+```
+
+#### FLUSHDB
+
+在 Redis 中，`FLUSHDB` 命令用于删除当前数据库中的所有键。它的返回值是 OK。
+
+这个命令不要求额外参数，所以它的 arity 是 1（即自身命令）。
+
+```go filename="database/keys.go"
+func execFlushDB(db *DB, args [][]byte) resp.Reply {
+	db.Flush()
+	return reply.MakeOKReply()
+}
+
+func init() {
+	// ...
+	RegisterCommand("FLUSHDB", execFlushDB, -1)
+}
+```
+
+#### TYPE
+
+在 Redis 中，`TYPE` 命令用于返回键的类型。它的返回值是一个字符串，表示键的类型。
+
+但是我们的项目到目前我们只去实现 String 类型，因此在这里我们只用返回 `string` 即可。
+
+```go filename="database/keys.go"
+// Handle the TYPE command
+// It returns the type of the specified key
+func execType(db *DB, args [][]byte) resp.Reply {
+	key := string(args[0])
+	if entity, ok := db.GetEntity(key); ok {
+		switch entity.Data.(type) {
+		// If the entity is []byte, return the type as "string"
+		case []byte:
+			return reply.MakeBulkReply([]byte("string"))
+		}
+		// TODO: Add more types as needed
+	} else {
+		return reply.MakeStatusReply("none")
+	}
+	return reply.MakeUnknownReply()
+}
+
+func init() {
+	// ...
+	RegisterCommand("TYPE", execType, 2)
+}
+```
+
+#### RENAME
+
+在 Redis 中，`RENAME` 命令用于重命名键。它的返回值是 OK。
+
+```bash
+RENAME key1 key2
+```
+
+这会将 `key1` 重命名为 `key2`。如果 `key2` 已经存在，**则会覆盖它**。
+
+```go filename="database/keys.go"
+// Handle the RENAME command.
+// It renames a key in the database.
+// RENAME key newkey
+func execRename(db *DB, args [][]byte) resp.Reply {
+	src := string(args[0])
+	dst := string(args[1])
+	entity, ok := db.GetEntity(src)
+	if !ok {
+		return reply.MakeStandardErrorReply("ERR no such key")
+	}
+	db.PutEntity(dst, entity)
+	db.Remove(src)
+	return reply.MakeOKReply()
+}
+func init() {
+	// ...
+	RegisterCommand("RENAME", execRename, 3)
+}
+```
+
+#### RENAMENX
+
+上面实现的 `RENAME` 命令，假设在重命名时，`key2` 已经存在，则会覆盖 `Key2` 原有的值。
+
+假如希望在重命名时，如果 `key2` 已经存在，则不执行重命名操作。我们可以使用 `RENAMENX` 命令。
+
+其中 `NX` 表示 `not exist`，即如果不存在则执行重命名操作。
+
+```bash
+RENAMENX key1 key2
+```
+
+要注意的是，这个命令的返回值是 1 或 0。1 表示重命名成功，0 表示重命名失败。这是与 `RENAME` 命令有区别的。
+
+实现：
+
+```go filename="database/keys.go"
+// Handle the RENAMENX command.
+// It renames a key in the database only if the new key does not exist.
+// RENAME key newkey
+func execRenameNX(db *DB, args [][]byte) resp.Reply {
+	src := string(args[0])
+	dst := string(args[1])
+	entity, ok := db.GetEntity(src)
+	if !ok {
+		return reply.MakeStandardErrorReply("ERR no such key")
+	}
+	if _, ok := db.GetEntity(dst); ok {
+		return reply.MakeIntReply(0)
+	}
+	db.PutEntity(dst, entity)
+	db.Remove(src)
+	return reply.MakeIntReply(1)
+}
+
+func init() {
+	// ...
+	RegisterCommand("RENAMENX", execRenameNX, 3)
+}
+```
+
+#### KEYS
+
+在 Redis 中，`KEYS` 命令用于查找所有符合给定模式的键。它的返回值是一个字符串切片，表示所有符合条件的键。
+
+使用示例：
+
+```bash
+KEYS *
+```
+
+表示返回所有的键。
+
+或者使用通配符，例如 `KEYS user:*` 来查找所有以 `user:` 开头的键。
+
+所以这里我们需要实现一个识别通配符的函数。
+
+Redis 支持哪些通配符？在 Redis 中，`KEYS pattern` 命令支持一套通配符语法：
+
+- `*`：匹配任意长度的任意字符（包括空字符）
+- `?`：匹配任意单个字符
+- `[abc]`：匹配集合中的任意一个字符
+- `[a-z]`：匹配范围内的任意一个字符
+- `[^abc]`：不匹配集合中的任意一个字符
+- 可以通过 `\` 进行字符转义
+
+举例：
+
+- `user:*` 匹配所有以 `user:` 开头的 key
+- `session:??` 匹配如 `session:ab`, `session:xy`
+- `file[0-9].log` 匹配如 `file1.log`, `file9.log`
+- `file[^0-9].log` 表示不匹配任何以数字结尾的文件名，例如 `fileA.log`, `fileB.log`
+
+为了匹配字符串，我们需要实现一个通配符匹配算法。我们可以使用动态规划来实现这个算法。
+
+首先我们以 `user:ab` 为例，判断字符串是否符合给定的通配符模式。
+
+第一步：`CompilePattern("user:??")` 即将通配符编译成一个模式对象。这个模式对象包含了所有的通配符信息。
+
+这个通配符会被编译为下表：
+
+| 索引 | 类型 | 内容 |
+| ---- | ---- | ---- |
+| 0    | normal | `u` |
+| 1    | normal | `s` |
+| 2    | normal | `e` |
+| 3    | normal | `r` |
+| 4    | normal | `:` |
+| 5    | any | `?` |
+| 6    | any | `?` |
+
+第二步：`IsMatch("user:ab")` 即判断字符串是否符合给定的通配符模式。我们使用动态规划来实现这个算法。
+
+定义一个布尔二维表：`table[i][j]` 表示当前的遍历到的数据 `s[:i]` 和 `pattern[:j]` 是否匹配。
+
+一格格开始填表：
+
+| i（字符串索引） | j（模式索引） | 当前字符 | 模式字符 | 是否匹配 | 原因 |
+| -------------- | -------------- | -------- | -------- | -------- | ---- |
+| 0   		| 0              | `u`	  | `u`      | ✅     | 字符相同 |
+| 1   		| 1			  | `s`	  | `s`      | ✅     | 字符相同 |
+| 2   		| 2			  | `e`	  | `e`      | ✅     | 字符相同 |
+| 3   		| 3			  | `r`	  | `r`      | ✅     | 字符相同 |
+| 4   		| 4			  | `:`	  | `:`      | ✅     | 字符相同 |
+| 5   		| 5			  | `a`	  | `?`      | ✅     | 匹配任意单个字符 |
+| 6   		| 6			  | `b`	  | `?`      | ✅     | 匹配任意单个字符 |
+
+最后值都是 `true`，所以返回 `true`。
+
+这个不用太纠结，直接使用即可。完整的代码，我们在 `lib` 根文件夹下创建 `wildcard` 包，然后在 `wildcard` 包下创建一个 `wildcard.go` 文件，用于存放通配符的实现。
+
+```go filename="lib/wildcard/wildcard.go"
+package wildcard
+
+const (
+	normal     = iota
+	all        // *
+	any        // ?
+	setSymbol  // []
+	rangSymbol // [a-b]
+	negSymbol  // [^a]
+)
+
+type item struct {
+	character byte
+	set       map[byte]bool
+	typeCode  int
+}
+
+func (i *item) contains(c byte) bool {
+	if i.typeCode == setSymbol {
+		_, ok := i.set[c]
+		return ok
+	} else if i.typeCode == rangSymbol {
+		if _, ok := i.set[c]; ok {
+			return true
+		}
+		var (
+			min uint8 = 255
+			max uint8 = 0
+		)
+		for k := range i.set {
+			if min > k {
+				min = k
+			}
+			if max < k {
+				max = k
+			}
+		}
+		return c >= min && c <= max
+	} else {
+		_, ok := i.set[c]
+		return !ok
+	}
+}
+
+// Pattern represents a wildcard pattern
+type Pattern struct {
+	items []*item
+}
+
+// CompilePattern convert wildcard string to Pattern
+func CompilePattern(src string) *Pattern {
+	items := make([]*item, 0)
+	escape := false
+	inSet := false
+	var set map[byte]bool
+	for _, v := range src {
+		c := byte(v)
+		if escape {
+			items = append(items, &item{typeCode: normal, character: c})
+			escape = false
+		} else if c == '*' {
+			items = append(items, &item{typeCode: all})
+		} else if c == '?' {
+			items = append(items, &item{typeCode: any})
+		} else if c == '\\' {
+			escape = true
+		} else if c == '[' {
+			if !inSet {
+				inSet = true
+				set = make(map[byte]bool)
+			} else {
+				set[c] = true
+			}
+		} else if c == ']' {
+			if inSet {
+				inSet = false
+				typeCode := setSymbol
+				if _, ok := set['-']; ok {
+					typeCode = rangSymbol
+					delete(set, '-')
+				}
+				if _, ok := set['^']; ok {
+					typeCode = negSymbol
+					delete(set, '^')
+				}
+				items = append(items, &item{typeCode: typeCode, set: set})
+			} else {
+				items = append(items, &item{typeCode: normal, character: c})
+			}
+		} else {
+			if inSet {
+				set[c] = true
+			} else {
+				items = append(items, &item{typeCode: normal, character: c})
+			}
+		}
+	}
+	return &Pattern{
+		items: items,
+	}
+}
+
+// IsMatch returns whether the given string matches pattern
+func (p *Pattern) IsMatch(s string) bool {
+	if len(p.items) == 0 {
+		return len(s) == 0
+	}
+	m := len(s)
+	n := len(p.items)
+	table := make([][]bool, m+1)
+	for i := 0; i < m+1; i++ {
+		table[i] = make([]bool, n+1)
+	}
+	table[0][0] = true
+	for j := 1; j < n+1; j++ {
+		table[0][j] = table[0][j-1] && p.items[j-1].typeCode == all
+	}
+	for i := 1; i < m+1; i++ {
+		for j := 1; j < n+1; j++ {
+			if p.items[j-1].typeCode == all {
+				table[i][j] = table[i-1][j] || table[i][j-1]
+			} else {
+				table[i][j] = table[i-1][j-1] &&
+					(p.items[j-1].typeCode == any ||
+						(p.items[j-1].typeCode == normal && uint8(s[i-1]) == p.items[j-1].character) ||
+						(p.items[j-1].typeCode >= setSymbol && p.items[j-1].contains(s[i-1])))
+			}
+		}
+	}
+	return table[m][n]
+}
+```
+
+让我们回到 `keys.go` 文件中，来实现 `KEYS` 命令。
+
+```go filename="database/keys.go"
+// Handle the KEYS command.
+// It returns all keys in the database that match the specified pattern.
+func execKeys(db *DB, args [][]byte) resp.Reply {
+	pattern := wildcard.CompilePattern(string(args[0]))
+	result := make([][]byte, 0) // Store all matching keys
+	db.data.ForEach(func(key string, val interface{}) bool {
+		if pattern.IsMatch(key) {
+			result = append(result, []byte(key))
+		}
+		return true
+	})
+	return reply.MakeMultiBulkReply(result)
+}
+
+func init() {
+	// ...
+	RegisterCommand("KEYS", execKeys, 2)
+}
+```
+
+<div className="text-orange-400 font-bold text-xl my-3 mt-5">
+	重要勘误
+</div>
+
+在之前我们声明 `ForEach` 的时候，对于接受的条件函数 `Consumer`，我们忘记了添加返回值。我们需要在 `datastruct/dict/dict.go` 中把 `Consumer` 的返回值改为 `bool`，表示是否继续遍历。
+
+```go filename="datastruct/dict/dict.go"
+type Consumer func(key string, val interface{}) bool // function type for iterating over key-value pairs
+```
+
+### 实现 Strings 命令集
+
+刚刚我们实现完了 `KEYS` 命令集，接下来我们实现 `Strings` 命令集。`Strings` 命令用于操作字符串类型的键值对。
+
+我们这里挑选一些比较经典的命令来实现：
+
+- `SET key value`：设置键值对
+- `GET key`：获取键值对
+- `SETNX key value`：设置键值对，如果键不存在
+- `GETSET key value`：设置键值对，并返回旧值
+- `STRLEN key`：获取字符串的长度
+
+在 `database` 目录下创建一个 `strings.go` 文件，用于存放 `Strings` 命令的实现。
+
+#### GET
+
+在 Redis 中，`GET` 命令用于获取键值对。它的返回值是一个字符串，表示键的值。
+
+```go filename="database/strings.go"
+// execGet retrieves the value associated with the specified key from the database.
+func execGet(db *DB, args [][]byte) resp.Reply {
+	key := string(args[0])
+	if entity, ok := db.GetEntity(key); ok {
+		// TODO: If we have multiple types, we need to check the conversion if it's not []byte
+		return reply.MakeBulkReply(entity.Data.([]byte))
+	}
+	return reply.MakeNullBulkReply()
+}
+
+func init() {
+	// ...
+	RegisterCommand("GET", execGet, 2)
+}
+```
+
+需要注意的是，由于我们只实现了 `String` 类型，所以我们在这里直接返回 `entity.Data.([]byte)` 即可。如果我们有多个类型，我们需要在这里判断类型转换是否成功。
+如果转换失败，我们需要返回一个错误回复。
+
+#### SET
+
+在 Redis 中，`SET` 命令用于设置键值对。它的返回值是 OK。
+
+```go filename="database/strings.go"
+// execSet stores the specified key-value pair in the database.
+func execSet(db *DB, args [][]byte) resp.Reply {
+	key := string(args[0])
+	value := args[1]
+	entity := &database.DataEntity{
+		Data: value,
+	}
+	db.PutEntity(key, entity)
+	return reply.MakeOKReply()
+}
+
+func init() {
+	// ...
+	RegisterCommand("SET", execSet, 3)
+}
+```
+
+#### SETNX
+
+在 Redis 中，`SETNX` 命令用于设置键值对，如果键不存在。它的返回值是 1 或 0。1 表示设置成功，0 表示设置失败。
+
+```go filename="database/strings.go"
+// execSetNX stores the specified key-value pair in the database only if the key does not already exist.
+// If the key already exists, it does not modify the value and returns 0.
+// If the key does not exist, it sets the value and returns 1.
+// SETNX key value
+func execSetNX(db *DB, args [][]byte) resp.Reply {
+	key := string(args[0])
+	value := args[1]
+	entity := &database.DataEntity{
+		Data: value,
+	}
+	result := db.PutIfAbsent(key, entity)
+	return reply.MakeIntReply(int64(result))
+}
+
+func init() {
+	// ...
+	RegisterCommand("SETNX", execSetNX, 3)
+}
+```
+
+#### GETSET
+
+在 Redis 中，`GETSET` 命令用于设置键值对，并返回旧值。它的返回值是一个字符串，表示旧值。
+
+```go filename="database/strings.go"
+// execGetSet stores the specified key-value pair in the database and returns the old value associated with the key.
+func execGetSet(db *DB, args [][]byte) resp.Reply {
+	key := string(args[0])
+	value := args[1]
+
+	entity, ok := db.GetEntity(key)
+	db.PutEntity(key, &database.DataEntity{
+		Data: value,
+	})
+	if !ok {
+		return reply.MakeNullBulkReply()
+	}
+	return reply.MakeBulkReply(entity.Data.([]byte))
+}
+
+func init() {
+	// ...
+	RegisterCommand("GETSET", execGetSet, 3)
+}
+```
+
+#### STRLEN
+
+在 Redis 中，`STRLEN` 命令用于获取字符串的长度。它的返回值是一个整数，表示字符串的长度。
+
+```bash
+STRLEN key
+```
+
+```go filename="database/strings.go"
+// execStrLen retrieves the length of the value associated with the specified key.
+func execStrLen(db *DB, args [][]byte) resp.Reply {
+	key := string(args[0])
+	entity, ok := db.GetEntity(key)
+	if !ok {
+		return reply.MakeNullBulkReply()
+	}
+	return reply.MakeIntReply(int64(len(entity.Data.([]byte))))
+}
+
+func init() {
+	// ...
+	RegisterCommand("STRLEN", execStrLen, 2)
+}
+```
+
+到这里我们就实现完了 `Strings` 命令集。我们可以在 `main.go` 中测试一下。
+
+## 实现核心 database
+
+让我们回到 `main.go` 文件中。
+
+```go filename="main.go"
+func main() {
+	// ...
+	err := tcp.ListenAndServeWithSignal(
+		&tcp.Config{
+			Address: fmt.Sprintf("%s:%d",
+				config.Properties.Bind,
+				config.Properties.Port),
+		},
+		handler.MakeHandler())	
+	if err != nil {
+		logger.Error(err)
+	}
+}
+```
+
+我们创建了一个 `handler` 用于处理 TCP 连接：
+
+```go filename="handler/handler.go"
+// MakeHandler creates a RespHandler instance
+func MakeHandler() *RespHandler {
+	var db databaseface.Database
+	db = database.NewEchoDatabase()
+	return &RespHandler{
+		db: db,
+	}
+}
+```
+
+而在这里，我们仍旧使用的是之前创建的回显服务器，并没有真正使用到数据库业务。
+
+现在我们需要去实现核心的 `database` 业务逻辑。
+
+在 `database` 目录下创建一个 `database.go` 文件，用于存放数据库的实现。
+
+每个数据库都由多个 `DB` 实例组成。我们在这里创建一个 `Database` 结构体，用于存放所有的 `DB` 实例。
+
+```go filename="database/database.go"
+package database
+
+type Database struct {
+	dbSet []*DB
+}
+```
+
+接下来我们需要实现 `database` 的三个接口：
+
+```go filename="interface/database/database.go"
+type Database interface {
+	Exec(client resp.Connection, args [][]byte) resp.Reply
+	AfterClientClose(c resp.Connection)
+	Close()
+}
+```
+
+它们分别是：
+
+- `Exec`：执行命令
+- `AfterClientClose`：客户端关闭后执行
+- `Close`：关闭数据库
+
+我们向 `redis.conf` 中添加一个 `databases` 配置项，用于指定数据库的数量。默认值为 16。
+
+```bash filename="redis.conf"
+databases 16
+```
+
+然后创建 `MakeDatabase` 函数，用于创建数据库实例。这里我们需要根据配置文件中的 `databases` 配置项来创建数据库实例。
+
+```go filename="database/database.go"
+// NewDatabase creates a new Database instance
+func NewDatabase() *Database {
+	database := &Database{}
+	if config.Properties.Databases == 0 {
+		config.Properties.Databases = 16
+	}
+	database.dbSet = make([]*DB, config.Properties.Databases)
+	for i := range database.dbSet {
+		db := MakeDB()
+		db.index = i
+		database.dbSet[i] = db
+	}
+	return database
+}
+```
+
+由于一个数据库实例是多个 `DB` 实例的集合，所以我们需要给用户实现一个选择数据库的功能。在之前实现的我们的 RESP 协议连接中：
+
+```go filename="interface/resp/conn.go"
+type Connection interface {
+	Write([]byte) error // Write data to the connection
+	GetDBIndex() int    // Get database index
+	SelectDB(int)       // Select database
+}
+```
+
+我们创建了一个 `SelectDB` 方法，用于选择数据库。然后我们在 RESP 中实现了它：
+
+```go filename="resp/connnection/connection.go"
+// SelectDB selects a database
+func (c *Connection) SelectDB(dbNum int) {
+	c.selectedDB = dbNum
+}
+```
+
+接下来我们就可以使用这个方法来实现数据库的选择功能。我们需要支持用户输入 `SELECT <dbNum>` 命令来选择数据库。
+
+在 `database.go` 文件实现：
+
+```go filename="database/database.go"
+// execSelect sets the current database for the client connection.
+// select x
+func execSelect(c resp.Connection, database *Database, args [][]byte) resp.Reply {
+	dbIndex, err := strconv.Atoi(string(args[0]))
+	if err != nil {
+		return reply.MakeStandardErrorReply("ERR invalid DB index")
+	}
+	if dbIndex < 0 || dbIndex >= len(database.dbSet) {
+		return reply.MakeStandardErrorReply("ERR DB index out of range")
+	}
+	c.SelectDB(dbIndex)
+	return reply.MakeIntReply(int64(dbIndex))
+}
+```
+
+这里有几个注意的点，一个是我们需要把 `dbNum` 转换为整数，另一个是我们需要判断 `dbNum` 是否在范围内。
+
+接下来我们要实现 `Exec` 方法，这个方法是我们整个服务器的入口，所有的命令都会经过这个方法，然后执行对应的命令。
+
+```go filename="database/database.go"
+// Exec executes a command on the database
+func (d *Database) Exec(client resp.Connection, args [][]byte) resp.Reply {
+	defer func() {
+		if err := recover(); err != nil {
+			logger.Error("Database Exec panic:" + err.(error).Error())
+		}
+	}()
+	cmdName := strings.ToLower(string(args[0]))
+	if cmdName == "select" {
+		if len(args) != 2 {
+			return reply.MakeArgNumErrReply("select")
+		}
+		return execSelect(client, d, args[1:])
+	}
+	// Get the current database index from the client connection
+	db := d.dbSet[client.GetDBIndex()]
+	return db.Exec(client, args)
+}
+```
+
+在这里我们需要注意的是，我们需要在 `Exec` 方法中判断命令是否是 `SELECT` 命令，如果是的话，我们就执行 `execSelect` 方法来选择数据库。
+
+然后取出当前数据库的索引，执行对应的命令。
+
+接下来我们要到 `resp/handler/handler.go` 文件中修改 `MakeHandler` 方法，来使用我们刚刚实现的 `database`。使用 `database.NewDatabase()` 来创建一个新的数据库实例。代替原先的回显服务器 `database.NewEchoDatabase()`。
+
+```go filename="handler/handler.go"
+func MakeHandler() *RespHandler {
+	db := database.NewDatabase()
+	return &RespHandler{
+		db: db,
+	}
+}
+```
+
+到目前为止，我们来回顾一下 Redigo 执行的流程。
+
+1. **客户端请求解析**：
+   - 客户端通过 TCP 连接发送命令，服务器使用 RESP 协议解析器解析请求。
+   - `ParseStream` 函数异步解析客户端的命令流，将其转换为 `Payload` 对象。
+
+2. **命令分发与验证**：
+   - 解析后的命令通过 `RespHandler` 分发到数据库层。
+   - 数据库层的 `Exec` 方法根据命令名称从 `cmdTable` 中查找对应的命令结构体。
+   - 验证命令参数数量是否符合要求，若不符合则返回错误回复。
+
+3. **命令执行**：
+   - 数据库层调用对应的命令执行函数（如 `execGet`、`execSet` 等）。
+   - 执行函数通过 `DB` 结构体操作底层的 `SyncDict` 数据结构，完成数据的增删改查。
+
+4. **响应生成**：
+   - 命令执行完成后，返回一个 `resp.Reply` 对象。
+   - 服务器将 `Reply` 对象序列化为 RESP 格式并发送回客户端。
+
+5. **多数据库支持**：
+   - 客户端可以通过 `SELECT` 命令切换数据库。
+   - 每个客户端连接维护一个 `selectedDB` 字段，指向当前使用的数据库实例。
+
+通过以上流程，Redigo 实现了一个简化版的 Redis 服务器，支持基本的键值操作和多数据库管理。
+
+从下一章节开始，我们要实现持久化功能。
+
+## 测试
+
+启动服务器：
+
+```bash
+go run main.go
+```
+
+新开一个命令行，执行命令：
+
+```bash
+printf "*1\r\n\$4\r\nPING\r\n" | nc localhost 6379
+```
+
+返回：
+
+```bash
++PONG
+```
+
+执行：
+
+```bash
+printf "*3\r\n\$3\r\nSET\r\n\$3\r\nkey\r\n\$5\r\nvalue\r\n" | nc localhost 6379
+```
+
+这是一条 `SET` 命令，设置键值对 `key` 和 `value`。
+
+返回：
+
+```bash
++OK
+```
+
+然后我们试着获取一下：
+
+```bash
+printf "*2\r\n\$3\r\nGET\r\n\$3\r\nkey\r\n" | nc localhost 6379
+```
+
+返回：
+
+```bash
+$5
+value
+```
+
+我们可以看到，返回的值是 `value`，说明我们成功地设置了键值对。
+
+到目前为止，数据存在了内存中的 `dict` 中。我们可以使用 `KEYS` 命令来查看所有的键：
+
+```bash
+printf "*2\r\n\$4\r\nKEYS\r\n\$1\r\n*\r\n" | nc localhost 6379
+```
+
+返回：
+
+```bash
+*1
+$3
+key
+```
