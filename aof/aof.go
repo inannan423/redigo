@@ -1,11 +1,14 @@
 package aof
 
 import (
+	"io"
 	"os"
 	"redigo/config"
 	"redigo/interface/database"
 	"redigo/lib/logger"
 	"redigo/lib/utils"
+	"redigo/resp/connection"
+	"redigo/resp/parser"
 	"redigo/resp/reply"
 	"strconv"
 )
@@ -91,5 +94,42 @@ func (h *AofHandler) handleAof() {
 
 // LoadAof loads commands from the AOF file and executes them on the database.
 func (h *AofHandler) LoadAof() {
-	// TODO: Implement loading commands from AOF file
+	// Open the AOF file for reading
+	aofFile, err := os.Open(h.aofFilename)
+	if err != nil {
+		logger.Error("AOF file open error: " + err.Error())
+		return
+	}
+	defer aofFile.Close()
+
+	ch := parser.ParseStream(aofFile)
+	fakeConn := &connection.Connection{}
+	for p := range ch {
+		if p.Err != nil {
+			// If the error is EOF or unexpected EOF, break the loop
+			if p.Err == io.EOF || p.Err == io.ErrUnexpectedEOF {
+				// End of file
+				break
+			}
+			// Other errors
+			logger.Error("AOF file parse error: " + p.Err.Error())
+			continue
+		}
+		if p.Data == nil {
+			logger.Error("AOF file empty payload")
+			continue
+		}
+		// Attempt to parse the payload as a MultiBulkReply
+		// If it fails, log an error and continue to the next payload
+		r, ok := p.Data.(*reply.MultiBulkReply)
+		if !ok {
+			logger.Error("AOF file require multi bulk reply")
+			continue
+		}
+		// Execute the command on the database
+		rep := h.db.Exec(fakeConn, r.Args)
+		if reply.IsErrReply(rep) {
+			logger.Error("Execute AOF command error")
+		}
+	}
 }

@@ -35,8 +35,10 @@ func NewDatabase() *Database {
 		}
 		database.aofHandler = aofHandler
 		for _, db := range database.dbSet {
-			db.addAof = func(line CmdLine) {
-				database.aofHandler.AddAof(db.index, line)
+			// create new variable to avoid closure capturing the loop variable
+			sdb := db
+			sdb.addAof = func(line CmdLine) {
+				database.aofHandler.AddAof(sdb.index, line)
 			}
 		}
 	}
@@ -82,5 +84,5 @@ func execSelect(c resp.Connection, database *Database, args [][]byte) resp.Reply
 		return reply.MakeStandardErrorReply("ERR DB index out of range")
 	}
 	c.SelectDB(dbIndex)
-	return reply.MakeIntReply(int64(dbIndex))
+	return reply.MakeOKReply()
 }
