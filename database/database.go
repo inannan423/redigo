@@ -1,6 +1,7 @@
 package database
 
 import (
+	"redigo/aof"
 	"redigo/config"
 	"redigo/interface/resp"
 	"redigo/lib/logger"
@@ -10,7 +11,8 @@ import (
 )
 
 type Database struct {
-	dbSet []*DB
+	dbSet      []*DB
+	aofHandler *aof.AofHandler
 }
 
 // NewDatabase creates a new Database instance
@@ -25,6 +27,20 @@ func NewDatabase() *Database {
 		db.index = i
 		database.dbSet[i] = db
 	}
+
+	if config.Properties.AppendOnly {
+		aofHandler, err := aof.NewAofHandler(database)
+		if err != nil {
+			panic(err)
+		}
+		database.aofHandler = aofHandler
+		for _, db := range database.dbSet {
+			db.addAof = func(line CmdLine) {
+				database.aofHandler.AddAof(db.index, line)
+			}
+		}
+	}
+
 	return database
 }
 

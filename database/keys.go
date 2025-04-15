@@ -2,6 +2,7 @@ package database
 
 import (
 	"redigo/interface/resp"
+	"redigo/lib/utils"
 	"redigo/lib/wildcard"
 	"redigo/resp/reply"
 )
@@ -14,6 +15,9 @@ func execDel(db *DB, args [][]byte) resp.Reply {
 		keys[i] = string(arg)
 	}
 	deleted := db.Removes(keys...)
+	if deleted > 0 {
+		db.addAof(utils.ToCmdLineWithName("DEL", args...))
+	}
 	return reply.MakeIntReply(int64(deleted))
 }
 
@@ -34,6 +38,7 @@ func execExists(db *DB, args [][]byte) resp.Reply {
 // It clears all keys from the database
 func execFlushDB(db *DB, args [][]byte) resp.Reply {
 	db.Flush()
+	db.addAof(utils.ToCmdLineWithName("FLUSHDB", args...))
 	return reply.MakeOKReply()
 }
 
@@ -66,6 +71,7 @@ func execRename(db *DB, args [][]byte) resp.Reply {
 	}
 	db.PutEntity(dst, entity)
 	db.Remove(src)
+	db.addAof(utils.ToCmdLineWithName("RENAME", args...))
 	return reply.MakeOKReply()
 }
 
@@ -84,6 +90,7 @@ func execRenameNX(db *DB, args [][]byte) resp.Reply {
 	}
 	db.PutEntity(dst, entity)
 	db.Remove(src)
+	db.addAof(utils.ToCmdLineWithName("RENAMENX", args...))
 	return reply.MakeIntReply(1)
 }
 
