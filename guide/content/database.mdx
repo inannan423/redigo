@@ -1466,3 +1466,23 @@ printf "*2\r\n\$4\r\nKEYS\r\n\$1\r\n*\r\n" | nc localhost 6379
 $3
 key
 ```
+
+## 提交到 GitHub
+
+将代码提交到 GitHub：
+
+```bash
+git add .
+
+# 示例：可以自己写一下
+git commit -m "feat: implement in-memory database
+
+- Create Dict interface and SyncDict implementation
+- Add database structure with multi-DB support
+- Implement command pattern for Redis commands
+- Add basic Redis commands (PING, SET, GET, DEL, etc.)
+- Implement pattern matching for KEYS command
+- Support string operations like GETSET and STRLEN"
+
+git push origin main
+```
