@@ -1,6 +1,7 @@
 package database
 
 import (
+	"redigo/aof"
 	"redigo/config"
 	"redigo/interface/resp"
 	"redigo/lib/logger"
@@ -10,7 +11,8 @@ import (
 )
 
 type Database struct {
-	dbSet []*DB
+	dbSet      []*DB
+	aofHandler *aof.AofHandler
 }
 
 // NewDatabase creates a new Database instance
@@ -25,6 +27,22 @@ func NewDatabase() *Database {
 		db.index = i
 		database.dbSet[i] = db
 	}
+
+	if config.Properties.AppendOnly {
+		aofHandler, err := aof.NewAofHandler(database)
+		if err != nil {
+			panic(err)
+		}
+		database.aofHandler = aofHandler
+		for _, db := range database.dbSet {
+			// create new variable to avoid closure capturing the loop variable
+			sdb := db
+			sdb.addAof = func(line CmdLine) {
+				database.aofHandler.AddAof(sdb.index, line)
+			}
+		}
+	}
+
 	return database
 }
 
@@ -66,5 +84,5 @@ func execSelect(c resp.Connection, database *Database, args [][]byte) resp.Reply
 		return reply.MakeStandardErrorReply("ERR DB index out of range")
 	}
 	c.SelectDB(dbIndex)
-	return reply.MakeIntReply(int64(dbIndex))
+	return reply.MakeOKReply()
 }

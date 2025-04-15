@@ -9,8 +9,9 @@ import (
 )
 
 type DB struct {
-	index int
-	data  dict.Dict
+	index  int
+	data   dict.Dict
+	addAof func(CmdLine)
 }
 
 // MakeDB creates a new DB instance
@@ -18,6 +19,10 @@ func MakeDB() *DB {
 	return &DB{
 		index: 0,
 		data:  dict.MakeSyncDict(),
+		addAof: func(line CmdLine) {
+			// No-op by default,
+			// can be overridden by the database instance
+		},
 	}
 }
 
