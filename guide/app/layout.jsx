@@ -37,6 +37,8 @@ export default async function RootLayout({ children }) {
       <Head>
         <meta name="viewport" content="width=device-width, initial-scale=1.0" />
         <link rel="icon" href="/favicon.ico" />
+        {/* favicon */}
+        <link rel="icon" type="image/svg" href="/redigo.svg" />
       </Head>
       <body suppressHydrationWarning>
         <Layout

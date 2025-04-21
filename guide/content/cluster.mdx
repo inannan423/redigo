@@ -1,0 +1,165 @@
+# 实现 Redis 集群
+
+> 本文进度对应的代码仓库：[Redis 集群](https://github.com/inannan423/redigo/tree/cluster)
+
+在前面章节中，我们实现了单机版的 Redis。接下来，我们将实现 Redis 集群。Redis 集群是一个分布式的 Redis 实现，它允许将数据分布在多个节点上，从而提高性能和可用性。
+
+我们为什么需要 Redis 集群？因为单机版的 Redis 有一些限制，比如：
+
+- 单机版的 Redis 只能使用单个节点，无法利用多核 CPU 的性能。
+- 单机版的 Redis 的可用性依赖于单个节点，如果节点宕机，数据将丢失。
+- 单机版的 Redis 的性能受限于单个节点的性能，无法使用多个节点的性能。
+- 单机版的 Redis 的扩展性有限，无法轻易增加更多的节点以提升性能。
+
+## Redis 集群的运作原理
+
+Redis 集群是一个分布式的 Redis 实现，它允许将数据分布在多个节点上。
+
+例如有四个节点 A、B、C、D，Redis 集群会将数据分布在这四个节点上。每个节点负责一部分数据。
+
+当发生写入操作时，Redis 集群会将数据写入到对应的节点上。当发生读取操作时，Redis 集群会从对应的节点上读取数据。
+
+那么 Redis 集群是如何将数据分布在多个节点上的呢？这就需要用到一致性哈希算法。
+
+## 集群实现算法
+
+### 传统哈希算法
+
+传统的哈希算法是将数据映射到一个固定大小的哈希表中。假设我们有一个大小为 N 的哈希表，我们可以使用哈希函数将数据映射到哈希表中的一个位置。
+
+例如我们有四个节点 A、B、C、D。
+
+有一个新的键 K1，我们使用哈希函数计算出 K1 的哈希值为 X，然后对节点数 4 取模，得到 X % 4 = 2。我们将 K1 存储在节点 C 中。
+
+取数据的时候，我们同样使用哈希函数计算出 K1 的哈希值为 X，然后对节点数 4 取模，得到 X % 4 = 2。我们从节点 C 中读取 K1 的值。
+
+这就是传统的哈希算法来实现的集群。
+
+但是这样会存在一个问题：当我们增加一个节点 E 时，所有的键都需要重新计算哈希值并重新分配到新的节点上。这会导致大量的数据迁移，影响性能。
+
+### 一致性哈希算法
+
+一致性哈希算法是为了解决传统哈希算法的问题而提出的。它的核心思想是将节点和数据都映射到一个虚拟的环上。
+
+在这个环上，节点和数据都是一个个的点。我们可以使用哈希函数将节点和数据映射到这个环上。
+
+例如我们有四个节点 A、B、C、D。我们可以将它们映射到一个虚拟的环上：
+
+```
+    A
+   / \
+  D   B
+   \ /
+    C
+```
+
+我们可以给每个节点分配一个哈希值，可以使用节点名字、IP 地址等来计算。假设 A、B、C、D 的位置分别为 10056、24567、49837、56789。
+
+有一个新的键 K1，我们使用哈希函数计算出 K1 的哈希值为 12345。我们在环上顺时针查找，我们发现离 K1 最近的节点是 B。我们将 K1 存储在节点 B 中。
+
+那么增加一个节点 E 时，我们只需要将 E 映射到环上，例如 E 的地址是 34567。那么我们需要把 E 插入到 B 和 C 之间。**之前存放在 C 中的数据会有一部分变得离 E 更近**，我们需要将这些数据迁移到 E 中。但是其他节点不受影响，这样就避免了大量的数据迁移。
+
+这就是一致性哈希算法的基本原理。
+
+## 实现集群
+
+### 定义 Node Map
+
+在 `lib` 下新建一个 `consistent_hash` 文件夹，在下面新建 `consistent_hash.go` 文件，定义一个 `NodeMap` 结构体，用来存储节点的信息。
+
+在结构体中，我们需要定义下面的组件：
+
+- `hashFunc`：哈希函数，用来计算节点的哈希值。输出是一个 uint32 类型的值，这是因为在 Redis 中，哈希值是一个 32 位的整数。
+- `nodeHashs`：节点的哈希值列表，用来存储所有节点的哈希值。我们需要将节点的哈希值存储在一个切片中，以便后续查找。这个切片的内容后续是要排序的（Go 的排序方法支持 int 类型）所以我们使用 int 来存储。在 64 位的机器中，int 的正数部分长度为 32 位，和上面的 uint32 一致，所以可以兼容。
+- `nodehashMap`：节点的哈希值和节点名称的映射关系，用来存储节点的名称和哈希值之间的关系。便于通过哈希值查找节点。
+
+```go filename="lib/consistent_hash/consistent_hash.go"
+package consistenthash
+
+type NodeMap struct {
+	hashFunc  func(data []byte) uint32
+	nodeHashs []int
+    nodehashMap map[int]string
+}
+```
+
+然后创建一个 `NewNodeMap` 函数，用来初始化 `NodeMap` 结构体。
+
+```go filename="lib/consistent_hash/consistent_hash.go"
+func NewNodeMap(hashFunc func(data []byte) uint32) *NodeMap {
+	m := &NodeMap{
+		hashFunc:    hashFunc,
+		nodehashMap: make(map[int]string),
+	}
+	if m.hashFunc == nil {
+		m.hashFunc = crc32.ChecksumIEEE
+	}
+	return m
+}
+```
+
+在这里初始化 `hashFunc`，如果没有传入，则使用默认的 CRC32 哈希函数。
+
+不用初始化 `nodeHashs`，因为我们后续会在添加节点时初始化。
+
+接下来创建一个 `IsEmpty` 函数，用来判断 `NodeMap` 是否为空。
+
+```go filename="lib/consistent_hash/consistent_hash.go"
+func (m *NodeMap) IsEmpty() bool {
+	return len(m.nodehashMap) == 0
+}
+```
+
+### 实现一致性哈希算法
+
+在包中创建一个 `AddNodes` 函数，用来添加节点。
+
+传入的参数是一个字符串切片，表示节点的名称。我们需要遍历这个切片，将每个节点的名称转换成哈希值，并存储在 `nodeHashs` 列表中。同时，我们还需要将节点的名称和哈希值之间的映射关系存储在 `nodehashMap` 中。
+
+完成后，`nodeHashs` 列表中存储的就是所有节点的哈希值。我们需要对这个列表进行排序，这里使用 Go 的内置排序方法。`sort.Ints` 底层使用的是快速排序算法，时间复杂度为 O(nlogn)，空间复杂度为 O(logn)。
+
+```go filename="lib/consistent_hash/consistent_hash.go"
+func (m *NodeMap) AddNodes(nodes ...string) {
+	for _, node := range nodes {
+		if node == "" {
+			continue
+		}
+		hash := int(m.hashFunc([]byte(node)))
+		m.nodeHashs = append(m.nodeHashs, hash)
+		m.nodehashMap[hash] = node
+	}
+	sort.Ints(m.nodeHashs)
+}
+```
+
+接下来创建一个 `PickNode` 函数，用来根据给定的键值选择一个节点。
+
+在这里我们使用 `sort.Search` 方法来查找离给定键值最近的节点。
+
+```go
+sort.Search(n, f func(i int) bool) int
+```
+
+这个函数会在 `[0, n)` 的区间上进行二分查找，返回最小的满足 `f(i) == true` 的下标 `i`。如果所有的 `f(i)` 都是 `false`，那就返回 `n`。
+
+```go filename="lib/consistent_hash/consistent_hash.go"
+// PickNode picks a node based on the key, returning the node that is closest to the hash of the key
+func (m *NodeMap) PickNode(key string) string {
+	if m.IsEmpty() {
+		return ""
+	}
+
+	hash := int(m.hashFunc([]byte(key)))
+	index := sort.Search(len(m.nodeHashs), func(i int) bool {
+		return m.nodeHashs[i] >= hash
+	})
+	// If the hash is greater than all node hashes, Int.Search returns len(m.nodeHashs)
+	// So we need to wrap around to the first node
+	if index == len(m.nodeHashs) {
+		index = 0
+	}
+	return m.nodehashMap[m.nodeHashs[index]]
+}
+```
+
+在这里，如果 `index` 等于 `len(m.nodeHashs)`，说明给定的键值大于所有节点的哈希值，我们需要将其设置为 0，表示从第一个节点开始。

@@ -4,4 +4,5 @@ export default {
     "resp": "RESP 协议解析",
     "database": "实现内存数据库",
     "persistence": "持久化",
+    "cluster": "集群"
 }

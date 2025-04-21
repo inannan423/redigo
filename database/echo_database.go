@@ -23,5 +23,4 @@ func (e EchoDatabase) AfterClientClose(c resp.Connection) {
 
 func (e EchoDatabase) Close() {
 	logger.Info("EchoDatabase Close")
-
 }
