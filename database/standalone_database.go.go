@@ -10,14 +10,14 @@ import (
 	"strings"
 )
 
-type Database struct {
+type StandaloneDatabase struct {
 	dbSet      []*DB
 	aofHandler *aof.AofHandler
 }
 
-// NewDatabase creates a new Database instance
-func NewDatabase() *Database {
-	database := &Database{}
+// NewDatabase creates a new StandaloneDatabase instance
+func NewStandaloneDatabase() *StandaloneDatabase {
+	database := &StandaloneDatabase{}
 	if config.Properties.Databases == 0 {
 		config.Properties.Databases = 16
 	}
@@ -47,7 +47,7 @@ func NewDatabase() *Database {
 }
 
 // Exec executes a command on the database
-func (d *Database) Exec(client resp.Connection, args [][]byte) resp.Reply {
+func (d *StandaloneDatabase) Exec(client resp.Connection, args [][]byte) resp.Reply {
 	defer func() {
 		if err := recover(); err != nil {
 			logger.Error("Database Exec panic:" + err.(error).Error())
@@ -65,17 +65,17 @@ func (d *Database) Exec(client resp.Connection, args [][]byte) resp.Reply {
 	return db.Exec(client, args)
 }
 
-func (d *Database) AfterClientClose(c resp.Connection) {
+func (d *StandaloneDatabase) AfterClientClose(c resp.Connection) {
 
 }
 
-func (d *Database) Close() {
+func (d *StandaloneDatabase) Close() {
 
 }
 
 // execSelect sets the current database for the client connection.
 // select x
-func execSelect(c resp.Connection, database *Database, args [][]byte) resp.Reply {
+func execSelect(c resp.Connection, database *StandaloneDatabase, args [][]byte) resp.Reply {
 	dbIndex, err := strconv.Atoi(string(args[0]))
 	if err != nil {
 		return reply.MakeStandardErrorReply("ERR invalid DB index")
