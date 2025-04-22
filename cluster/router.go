@@ -22,6 +22,15 @@ func makeRouter() map[string]CmdFunc {
 	routerMap["del"] = delFunc         // del key
 	routerMap["select"] = selectFunc   // select database
 
+	routerMap["lpush"] = defaultFunc
+	routerMap["rpush"] = defaultFunc
+	routerMap["lpop"] = defaultFunc
+	routerMap["rpop"] = defaultFunc
+	routerMap["lrange"] = defaultFunc
+	routerMap["llen"] = defaultFunc
+	routerMap["lindex"] = defaultFunc
+	routerMap["lset"] = defaultFunc
+
 	return routerMap
 }
 
