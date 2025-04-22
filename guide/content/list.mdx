@@ -418,27 +418,22 @@ redis-cli -p 6380
 2) "first"
 127.0.0.1:6380> DEL mylist
 (integer) 1
-redis-cli -p 6380
-127.0.0.1:6380> LPUSH mylist "first"
-(integer) 1
-127.0.0.1:6380> LPUSH mylist "second" "third"
+127.0.0.1:6380> RPUSH mylist "one" "two" "three"
 (integer) 3
-127.0.0.1:6380> RPUSH mylist "last"
-(integer) 4
-127.0.0.1:6380> LPOP mylist
-"third"
-127.0.0.1:6380> RPOP mylist
-"last"
+127.0.0.1:6380> LLEN mylist
+(integer) 3
+127.0.0.1:6380> LINDEX mylist 0
+"one"
+127.0.0.1:6380> LINDEX mylist -1
+"three"
+127.0.0.1:6380> LINDEX mylist 5
+(nil)
+127.0.0.1:6380> LSET mylist 1 "new-two"
+OK
 127.0.0.1:6380> LRANGE mylist 0 -1
-1) "second"
-2) "first"
-127.0.0.1:6380> LRANGE mylist 0 0
-1) "second"
-127.0.0.1:6380> LRANGE mylist -2 -1
-1) "second"
-2) "first"
-127.0.0.1:6380> DEL mylist
-(integer) 1
+1) "one"
+2) "new-two"
+3) "three"
 ```
 
 在这里我们测试了 List 结构的基本操作。如结果所示，这些操作都可以正常执行。
