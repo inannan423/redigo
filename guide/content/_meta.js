@@ -3,4 +3,6 @@ export default {
     "tcp": '创建 TCP 服务器',
     "resp": "RESP 协议解析",
     "database": "实现内存数据库",
+    "persistence": "持久化",
+    "cluster": "集群"
 }

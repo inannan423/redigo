@@ -3,6 +3,7 @@ package database
 import (
 	"redigo/interface/database"
 	"redigo/interface/resp"
+	"redigo/lib/utils"
 	"redigo/resp/reply"
 )
 
@@ -24,6 +25,7 @@ func execSet(db *DB, args [][]byte) resp.Reply {
 		Data: value,
 	}
 	db.PutEntity(key, entity)
+	db.addAof(utils.ToCmdLineWithName("SET", args...))
 	return reply.MakeOKReply()
 }
 
@@ -38,6 +40,7 @@ func execSetNX(db *DB, args [][]byte) resp.Reply {
 		Data: value,
 	}
 	result := db.PutIfAbsent(key, entity)
+	db.addAof(utils.ToCmdLineWithName("SETNX", args...))
 	return reply.MakeIntReply(int64(result))
 }
 
@@ -50,6 +53,7 @@ func execGetSet(db *DB, args [][]byte) resp.Reply {
 	db.PutEntity(key, &database.DataEntity{
 		Data: value,
 	})
+	db.addAof(utils.ToCmdLineWithName("GETSET", args...))
 	if !ok {
 		return reply.MakeNullBulkReply()
 	}

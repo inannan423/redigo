@@ -92,6 +92,11 @@ func MakeStandardErrorReply(status string) *StandardErrorReply {
 	return &StandardErrorReply{Status: status}
 }
 
+// Error implements the ErrorReply interface for StandardErrorReply
+func (r *StandardErrorReply) Error() string {
+	return r.Status
+}
+
 // IntReply 整数回复
 type IntReply struct {
 	Code int64
