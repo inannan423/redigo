@@ -3,6 +3,7 @@ package cluster
 import (
 	"context"
 	"errors"
+	"fmt"
 	"redigo/interface/resp"
 	"redigo/lib/utils"
 	"redigo/resp/client"
@@ -43,6 +44,7 @@ func (c *ClusterDatabase) relayExec(peer string, conn resp.Connection, args [][]
 	if peer == c.self {
 		return c.db.Exec(conn, args)
 	}
+	fmt.Println("peer:", peer, "args:", args)
 	client, err := c.getPeerClient(peer)
 	if err != nil {
 		return reply.MakeStandardErrorReply(err.Error())

@@ -15,7 +15,7 @@ type StandaloneDatabase struct {
 	aofHandler *aof.AofHandler
 }
 
-// NewDatabase creates a new StandaloneDatabase instance
+// NewStandaloneDatabase creates a new StandaloneDatabase instance
 func NewStandaloneDatabase() *StandaloneDatabase {
 	database := &StandaloneDatabase{}
 	if config.Properties.Databases == 0 {

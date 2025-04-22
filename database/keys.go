@@ -16,7 +16,9 @@ func execDel(db *DB, args [][]byte) resp.Reply {
 	}
 	deleted := db.Removes(keys...)
 	if deleted > 0 {
-		db.addAof(utils.ToCmdLineWithName("DEL", args...))
+		go func(cmdLine [][]byte) {
+			db.addAof(utils.ToCmdLineWithName("DEL", cmdLine...))
+		}(args)
 	}
 	return reply.MakeIntReply(int64(deleted))
 }

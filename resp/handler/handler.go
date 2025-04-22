@@ -2,8 +2,11 @@ package handler
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net"
+	"redigo/cluster"
+	"redigo/config"
 	"redigo/database"
 	databaseface "redigo/interface/database"
 	"redigo/lib/logger"
@@ -28,7 +31,16 @@ type RespHandler struct {
 
 // MakeHandler creates a RespHandler instance
 func MakeHandler() *RespHandler {
-	db := database.NewStandaloneDatabase()
+	var db databaseface.Database
+	// If self is not empty, it means this is a cluster node
+	// and we need to create a cluster database
+	if config.Properties.Self != "" && len(config.Properties.Peers) > 0 {
+		fmt.Println("You are running in cluster mode")
+		db = cluster.MakeClusterDatabase()
+	} else {
+		fmt.Println("You are running in standalone mode")
+		db = database.NewStandaloneDatabase()
+	}
 	return &RespHandler{
 		db: db,
 	}

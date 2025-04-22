@@ -7,6 +7,9 @@ import (
 	"redigo/interface/database"
 	"redigo/interface/resp"
 	consistenthash "redigo/lib/consistent_hash"
+	"redigo/lib/logger"
+	"redigo/resp/reply"
+	"strings"
 
 	pool "github.com/jolestar/go-commons-pool/v2"
 )
@@ -36,9 +39,7 @@ func MakeClusterDatabase() *ClusterDatabase {
 	ctx := context.Background()
 	// Create connection pools for each peer
 	for _, peer := range config.Properties.Peers {
-		pool.NewObjectPoolWithDefaultConfig(ctx, &connectionFactory{
-			Peer: peer,
-		})
+		cluster.peerConn[peer] = pool.NewObjectPoolWithDefaultConfig(ctx, &connectionFactory{Peer: peer})
 	}
 	cluster.nodes = nodes
 	return cluster
@@ -49,14 +50,31 @@ type CmdFunc func(cluster *ClusterDatabase, conn resp.Connection, args [][]byte)
 var routerMap = makeRouter()
 
 // Exec executes a command on the cluster database
-func (c *ClusterDatabase) Exec(client resp.Connection, args [][]byte) resp.Reply {
-	return nil
+func (c *ClusterDatabase) Exec(client resp.Connection, args [][]byte) (result resp.Reply) {
+	defer func() {
+		if err := recover(); err != nil {
+			logger.Error("ClusterDatabase Exec panic:" + err.(error).Error())
+			result = reply.MakeUnknownReply()
+		}
+	}()
+
+	cmdName := strings.ToLower(string(args[0]))
+
+	if cmdFunc, ok := routerMap[cmdName]; ok {
+		return cmdFunc(c, client, args)
+	} else {
+		result = reply.MakeStandardErrorReply("ERR unknown command '" + cmdName + "'")
+	}
+
+	return
 }
 
 // Close closes the cluster database
 func (c *ClusterDatabase) Close() {
+	c.db.Close()
 }
 
 // AfterClientClose is called after a client closes
 func (c *ClusterDatabase) AfterClientClose(client resp.Connection) {
+	c.db.AfterClientClose(client)
 }

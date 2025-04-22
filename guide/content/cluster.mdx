@@ -1061,31 +1061,91 @@ func flushDBFunc(cluster *ClusterDatabase, conn resp.Connection, args [][]byte) 
 
 ```go filename="cluster/router.go"
 // delFunc is a function that executes a command on the cluster database
+// delFunc is a function that executes a command on the cluster database
 func delFunc(cluster *ClusterDatabase, c resp.Connection, args [][]byte) resp.Reply {
-	replies := cluster.broadcastExec(c, args)
-	var errReply reply.ErrorReply
-	var deleted int64 = 0
-	for _, v := range replies {
-		if reply.IsErrReply(v) {
-			errReply = v.(reply.ErrorReply)
-			break
-		}
-		intReply, ok := v.(*reply.IntReply)
-		if !ok {
-			errReply = reply.MakeStandardErrorReply("error")
-		}
-		deleted += intReply.Code
+	// Check the number of arguments
+	if len(args) < 2 {
+		return reply.MakeArgNumErrReply("del")
 	}
 
-	if errReply == nil {
-		return reply.MakeIntReply(deleted)
+	// If there is only one key, route directly to the corresponding node
+	if len(args) == 2 {
+		key := string(args[1])
+		peer := cluster.peerPicker.PickNode(key)
+		// Note: The full command, including "DEL", needs to be passed
+		fullArgs := make([][]byte, 2)
+		fullArgs[0] = []byte("DEL")
+		fullArgs[1] = args[1]
+		return cluster.relayExec(peer, c, fullArgs)
 	}
-	return reply.MakeStandardErrorReply("error occurs: " + errReply.Error())
+
+	// --- Modification starts ---
+	// Handle multiple keys: group keys by node
+	groupedKeys := make(map[string][][]byte) // key: peer address, value: list of keys handled by the peer
+	for i := 1; i < len(args); i++ {         // Iterate over all keys to delete, starting from index 1
+		key := string(args[i])
+		peer := cluster.peerPicker.PickNode(key)
+		if _, ok := groupedKeys[peer]; !ok {
+			groupedKeys[peer] = make([][]byte, 0)
+		}
+		groupedKeys[peer] = append(groupedKeys[peer], args[i]) // Add the original []byte key to the list
+	}
+
+	// Execute delete operation for each node
+	var deleted int64 = 0
+	var firstErrReply reply.ErrorReply // Save the first encountered error
+
+	for peer, keys := range groupedKeys {
+		// Construct the DEL command for the current node: ["DEL", key1, key2, ...]
+		nodeArgs := make([][]byte, len(keys)+1)
+		nodeArgs[0] = []byte("DEL") // The command itself
+		copy(nodeArgs[1:], keys)    // Copy the list of keys handled by this node
+
+		// Send the command to the specific node
+		nodeReply := cluster.relayExec(peer, c, nodeArgs)
+
+		// Handle the response
+		if reply.IsErrReply(nodeReply) {
+			// If it is an error response, record the first error and stop processing other nodes (optional, can also choose to continue processing other nodes)
+			if firstErrReply == nil {
+				if errReply, ok := nodeReply.(reply.ErrorReply); ok {
+					firstErrReply = errReply
+				} else {
+					firstErrReply = reply.MakeStandardErrorReply("unknown error from peer")
+				}
+			}
+			// You can choose to break or continue here, depending on whether you want the entire operation to fail if one node fails
+			// break // Stop and return an error if one node fails
+			continue // Continue attempting to delete keys on other nodes, then summarize results or return the first error
+		}
+
+		// If it is an integer response, accumulate the number of deleted keys
+		if intReply, ok := nodeReply.(*reply.IntReply); ok {
+			deleted += intReply.Code
+		} else {
+			// If the response is neither the expected integer nor an error, treat it as an error
+			if firstErrReply == nil {
+				firstErrReply = reply.MakeStandardErrorReply("unexpected reply type from peer")
+			}
+			// break // Same as above
+			continue // Same as above
+		}
+	}
+
+	// If an error was encountered during processing, return the first error
+	if firstErrReply != nil {
+		// You can choose to return more detailed error information or just the first error
+		return reply.MakeStandardErrorReply("error occurs during multi-key delete: " + firstErrReply.Error())
+	}
+
+	// If all nodes succeeded (or partial errors were ignored), return the total number of deleted keys
+	return reply.MakeIntReply(deleted)
 }
 ```
 
-这个方法会遍历所有节点，调用 `broadcastExec` 方法将请求转发到每个节点。返回的结果会存储在一个 map 中，以节点 ID 为键，响应结果为值。
-我们遍历这个列表，检查是否有错误发生。如果有错误，就返回错误信息；如果没有错误，就返回成功的响应。
+这个方法会遍历所有的键，计算出每个键所在的节点，然后将这些键分组到对应的节点上。最后，我们对每个节点执行 `DEL` 命令，删除对应的键。
+
+这里不能直接使用广播，因为 `DEL` 命令是针对特定的键的，而不是针对整个数据库的。我们需要根据键的哈希值来确定它所在的节点，然后将删除请求转发到对应的节点。否则将会导致多个节点之间循环广播的问题。
 
 然后是 `select` 指令的处理逻辑。它和 `PING` 指令类似，不需要转发到其他节点。我们可以直接调用本地数据库的 `Exec` 方法来处理这个指令。
 
@@ -1119,4 +1179,185 @@ func makeRouter() map[string]CmdFunc {
 }
 ```
 
-下面我们就要开始实现 `Exec` 方法了。
+下面我们就要开始实现 `Exec` 方法了。回到 `cluster/cluster_database.go` 文件，来实现 `Close` 和 `AfterClientClose` 方法。
+
+```go filename="cluster/cluster_database.go"
+// Close closes the cluster database
+func (c *ClusterDatabase) Close() {
+	c.db.Close()
+}
+
+// AfterClientClose is called after a client closes
+func (c *ClusterDatabase) AfterClientClose(client resp.Connection) {
+	c.db.AfterClientClose(client)
+}
+```
+
+直接调用 `db` 的 `Close` 和 `AfterClientClose` 方法。
+
+然后我们来实现 `Exec` 方法。这个方法会根据命令的类型选择不同的处理函数。
+
+```go filename="cluster/cluster_database.go"
+// Exec executes a command on the cluster database
+func (c *ClusterDatabase) Exec(client resp.Connection, args [][]byte) (result resp.Reply) {
+	defer func() {
+		if err := recover(); err != nil {
+			logger.Error("ClusterDatabase Exec panic:" + err.(error).Error())
+			result = reply.MakeUnknownReply()
+		}
+	}()
+
+	cmdName := strings.ToLower(string(args[0]))
+
+	if cmdFunc, ok := routerMap[cmdName]; ok {
+		return cmdFunc(c, client, args)
+	} else {
+		result = reply.MakeStandardErrorReply("ERR unknown command '" + cmdName + "'")
+	}
+
+	return
+}
+```
+
+在这个方法里，我们首先获取命令的名称，然后根据命令名称从路由器中获取对应的处理函数。如果找到了，就调用这个函数来处理命令；如果没有找到，就返回一个错误的响应。
+
+但是目前这个 `MakeClusterDatabase` 方法是没有被调用的。
+
+我们来到 `resp/handle/handle.go` 文件，修改 `MakeHandle` 方法，来创建一个 `ClusterDatabase` 实例。
+
+```go filename="resp/handle/handle.go"
+// MakeHandler creates a RespHandler instance
+func MakeHandler() *RespHandler {
+	var db databaseface.Database
+	// If self is not empty, it means this is a cluster node
+	// and we need to create a cluster database
+	if config.Properties.Self != "" && len(config.Properties.Peers) > 0 {
+		db = cluster.MakeClusterDatabase()
+	} else {
+		db = database.NewStandaloneDatabase()
+	}
+	return &RespHandler{
+		db: db,
+	}
+}
+```
+
+这里我们判断 `config.Properties.Self` 是否为空，如果不为空，就创建一个 `ClusterDatabase` 实例；否则就创建一个 `StandaloneDatabase` 实例。
+
+## 测试
+
+现在我们设置 `redis.conf` 文件，配置 `self` `port` 和 `peers` 字段。
+
+```bash
+bind 0.0.0.0
+port 6379
+databases 16
+appendonly yes
+appendfilename appendonly.aof
+self 127.0.0.1:6379
+peers 127.0.0.1:6380
+```
+
+由于现在我们需要开启多个实例进行测试，所以我们运行 `go build` 编译成二进制文件。
+
+执行完毕后我们可以在根目录下看到一个 `redis` 的二进制文件。 Windows下会生成 `redis.exe` 文件。
+
+在别的地方新建一个文件夹，并将这个 `redis` 二进制文件复制到这个文件夹下。还有 `redis.conf` 配置文件。
+
+然后修改项目中的 `redis.conf` 文件，设置 `self` 和 `peers` 字段。
+
+```bash
+bind 0.0.0.0
+port 6380
+databases 16
+appendonly yes
+appendfilename appendonly.aof
+self 127.0.0.1:6380
+peers 127.0.0.1:6379
+```
+
+执行 `go run main.go` 启动 Redis 实例（`127.0.0.1:6380`）
+
+然后在刚刚的文件夹双击 `redis` 二进制文件，启动 Redis 实例（`127.0.0.1:6379`）
+
+然后我们新建两个终端，使用 `redis-cli` 连接到这两个实例。
+
+```bash
+redis-cli -h 127.0.0.1 -p 6379
+redis-cli -h 127.0.0.1 -p 6380
+```
+
+然后我们在 6379 实例中执行 `PING` 命令，看看是否能正常响应。
+
+```bash
+PING
+```
+
+运行正常回复 `PONG`。
+
+然后我们在 6380 实例中执行 `PING` 命令，看看是否能正常响应。
+
+```bash
+PING
+```
+
+运行正常回复 `PONG`。
+
+然后我们在 6379 实例中执行 `SET` 命令，看看是否能正常响应。
+
+```bash
+SET key1 value1
+```
+
+我们看到回复了 `OK`。
+
+然后我们到 6380 实例中执行 `GET` 命令，看看是否能正常响应。
+
+```bash
+GET key1
+```
+
+这里我在 MacOS 上遇到一个问题，就是当我打包了二进制文件到别的文件夹后，运行时找不到配置文件。
+
+所以我修改了 `main.go` 文件，帮助二进制文件找到自己的工作目录下的配置文件。如果遇到同样的问题，可以前往 [main.go](https://github.com/inannan423/redigo/tree/cluster/main.go) 查看。
+
+完成修改后，我们重新编译二进制文件，启动两个实例。
+
+在 6379 实例中执行 `SET` 命令，看看是否能正常响应。
+
+```bash
+SET key1 value1
+```
+我们看到回复了 `OK`。
+
+然后我们到 6380 实例中执行 `GET` 命令，看看是否能正常响应。
+
+```bash
+GET key1
+```
+
+我们看到回复了 `value1`。
+
+然后我们在 6380 实例中执行 `SET` 命令，看看是否能正常响应。
+
+```bash
+SET key2 value2
+```
+我们看到回复了 `OK`。
+
+然后我们到 6379 实例中执行 `GET` 命令，看看是否能正常响应。
+
+```bash
+GET key2
+```
+我们看到回复了 `value2`。
+
+然后我们在 6379 实例中执行 `DEL` 命令，看看是否能正常响应。
+
+```bash
+DEL key1
+```
+
+我们看到回复了 `1`。
+
+这就表示我们的集群模式已经搭建完成了。
