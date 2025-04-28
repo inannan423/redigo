@@ -10,4 +10,5 @@ export default {
         "title": "更多数据结构实现"
     },
     "list": "链表",
+    "hash": "哈希表",
 }

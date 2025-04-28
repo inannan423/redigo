@@ -10,7 +10,7 @@ import (
 	"strings"
 )
 
-// ServerProperties 提供全局配置
+// ServerProperties provides the server configuration
 type ServerProperties struct {
 	Bind           string   `cfg:"bind"`
 	Port           int      `cfg:"port"`
@@ -36,7 +36,7 @@ func init() {
 	}
 }
 
-// parse 解析配置文件
+// parse parses the configuration file and returns a ServerProperties instance
 func parse(src io.Reader) *ServerProperties {
 	config := &ServerProperties{}
 
@@ -95,7 +95,7 @@ func parse(src io.Reader) *ServerProperties {
 	return config
 }
 
-// SetupConfig 配置初始化
+// SetupConfig initializes the configuration by reading from the specified file
 func SetupConfig(configFilename string) {
 	file, err := os.Open(configFilename)
 	if err != nil {

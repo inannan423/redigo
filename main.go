@@ -1,7 +1,7 @@
 package main
 
 import (
-	"flag" // Add import
+	// Add import
 	"fmt"
 	"os"
 	"path/filepath" // Add import
@@ -22,11 +22,11 @@ var defaultProperties = &config.ServerProperties{
 // Command line argument for specifying config file path
 var configPath string // Add variable
 
-func init() {
-	// Add command line argument support, allowing users to specify config file via -c flag
-	flag.StringVar(&configPath, "c", "", "Config file path (e.g., /path/to/redis.conf)")
-	flag.Parse()
-}
+// func init() {
+// 	// Add command line argument support, allowing users to specify config file via -c flag
+// 	flag.StringVar(&configPath, "c", "", "Config file path (e.g., /path/to/redis.conf)")
+// 	flag.Parse()
+// }
 
 // fileExists remains as is or use as needed
 func fileExists(filename string) bool {

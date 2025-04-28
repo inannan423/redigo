@@ -2,6 +2,7 @@ package database
 
 import (
 	"redigo/datastruct/dict"
+	"redigo/datastruct/hash"
 	"redigo/interface/database"
 	"redigo/interface/resp"
 	"redigo/resp/reply"
@@ -95,6 +96,33 @@ func (db *DB) PutIfAbsent(key string, entity *database.DataEntity) int {
 // Remove deletes the DataEntity associated with the given key from the database
 func (db *DB) Remove(key string) int {
 	return db.data.Remove(key)
+}
+
+// GetAsHash retrieves the DataEntity associated with the given key and checks if it is a hash
+func (db *DB) getAsHash(key string) (*hash.Hash, bool) {
+	entity, ok := db.GetEntity(key)
+	if !ok {
+		return nil, false
+	}
+	hash, ok := entity.Data.(*hash.Hash)
+	if !ok {
+		return nil, true // Key exists but is not a hash
+	}
+	return hash, true
+}
+
+// getOrCreateHash retrieves the DataEntity associated with the given key and creates a new hash if it doesn't exist
+func (db *DB) getOrCreateHash(key string) (*hash.Hash, bool) {
+	hashObj, ok := db.getAsHash(key)
+	if ok {
+		return hashObj, true
+	}
+
+	hashObj = hash.MakeHash()
+	db.PutEntity(key, &database.DataEntity{
+		Data: hashObj,
+	})
+	return hashObj, false
 }
 
 // Removes deletes the DataEntity associated with the given keys from the database
