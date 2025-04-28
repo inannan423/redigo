@@ -31,6 +31,20 @@ func makeRouter() map[string]CmdFunc {
 	routerMap["lindex"] = defaultFunc
 	routerMap["lset"] = defaultFunc
 
+	// Hash operations
+	routerMap["hset"] = defaultFunc      // hset key field value
+	routerMap["hsetnx"] = defaultFunc    // hsetnx key field value
+	routerMap["hget"] = defaultFunc      // hget key field
+	routerMap["hexists"] = defaultFunc   // hexists key field
+	routerMap["hdel"] = defaultFunc      // hdel key field [field ...]
+	routerMap["hlen"] = defaultFunc      // hlen key
+	routerMap["hgetall"] = defaultFunc   // hgetall key
+	routerMap["hkeys"] = defaultFunc     // hkeys key
+	routerMap["hvals"] = defaultFunc     // hvals key
+	routerMap["hmget"] = defaultFunc     // hmget key field [field ...]
+	routerMap["hmset"] = defaultFunc     // hmset key field value [field value ...]
+	routerMap["hencoding"] = defaultFunc // hencoding key (custom command)
+
 	return routerMap
 }
 
