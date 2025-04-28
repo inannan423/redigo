@@ -173,15 +173,15 @@ func readReply(conn net.Conn) string {
 }
 
 func TestMain(m *testing.M) {
-	// 在测试前启动服务器
+	// Start the server before running tests
 	go func() {
-		// 使用硬编码配置而不是解析命令行参数
+		// Use hardcoded config instead of parsing command line arguments
 		config.Properties = &config.ServerProperties{
 			Bind: "localhost",
 			Port: 6380,
 		}
 
-		// 启动服务器
+		// Start the server
 		tcp.ListenAndServeWithSignal(
 			&tcp.Config{
 				Address: fmt.Sprintf("%s:%d", config.Properties.Bind, config.Properties.Port),
@@ -189,12 +189,12 @@ func TestMain(m *testing.M) {
 			handler.MakeHandler())
 	}()
 
-	// 等待服务器启动
+	// Wait for the server to start
 	time.Sleep(1 * time.Second)
 
-	// 运行测试
+	// Run tests
 	code := m.Run()
 
-	// 退出测试
+	// Exit after tests
 	os.Exit(code)
 }

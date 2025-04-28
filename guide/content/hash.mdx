@@ -1,0 +1,955 @@
+# 实现哈希数据结构
+
+> 本文进度对应的代码仓库：[实现哈希结构](https://github.com/inannan423/redigo/tree/80d14707d588813c5c8e43d0834751c13f89bef6)
+
+在前面的章节中，我们已经实现了字符串和列表类型的数据结构。本章我们将继续扩展 Redis 的功能，为我们的服务器添加哈希（Hash）数据结构的支持。
+
+## Hash 结构介绍
+
+Redis 的 Hash 是一个键值对集合，字段和值都是字符串类型。Hash 适合用来存储对象，例如用户信息、商品信息等。
+
+Hash 支持的主要操作有：
+
+- `HSET`：设置 Hash 中的字段值。
+
+```bash 
+HSET key field value
+```
+
+- `HGET`：获取 Hash 中指定字段的值
+
+```bash
+HGET key field
+```
+
+- `HEXISTS`：检查 Hash 中是否存在指定字段
+
+```bash
+HEXISTS key field
+```
+
+- `HDEL`：删除 Hash 中的一个或多个字段
+
+```bash
+HDEL key field [field ...]
+```
+
+- `HLEN`：获取 Hash 中字段的数量
+
+```bash
+HLEN key
+```
+
+- `HGETALL`：获取 Hash 中所有的字段和值
+
+```bash
+HGETALL key
+```
+
+- `HKEYS`：获取 Hash 中所有的字段
+
+```bash
+HKEYS key
+```
+
+- `HVALS`：获取 Hash 中所有的值
+
+```bash
+HVALS key
+```
+
+- `HMGET`：获取 Hash 中多个字段的值
+
+```bash
+HMGET key field [field ...]
+```
+
+- `HMSET`：设置 Hash 中多个字段的值
+
+```bash
+HMSET key field value [field value ...]
+```
+
+- `HSETNX`：只有当字段不存在时才设置值
+
+```bash
+HSETNX key field value
+```
+
+## 实现思路
+
+为了实现 Redis 中的 Hash 结构，我们需要考虑性能和内存消耗的问题。Redis 在实现 Hash 时采用了两种编码方式：
+
+1. **listpack**：当 Hash 的字段数量较少且值较小时使用，内存占用少但随机访问性能一般
+2. **hashtable**：当 Hash 的字段数量较多或值较大时使用，随机访问性能好但内存占用较大
+
+我们的实现也将采用这种混合编码策略，当满足以下任一条件时，会从 listpack 转换为 hashtable：
+
+- 字段数量超过 `hashMaxListpackEntries`（默认512）
+- 任一字段或值的长度超过 `hashMaxListpackValue`（默认64字节）
+
+## Hash 数据结构实现
+
+首先，我们在 `datastruct/hash` 目录下创建 `hash.go` 文件，实现 Hash 数据结构：
+
+```go filename="datastruct/hash/hash.go"
+package hash
+
+const (
+	// If the number of entries in the hash exceeds this value, it will be converted to a hash table
+	hashMaxListpackEntries = 512
+	// If the length of the value in the hash exceeds this value, it will be converted to a hash table
+	hashMaxListpackValue = 64
+)
+
+// The encoding types for the hash
+const (
+	encodingListpack = iota
+	encodingHashTable
+)
+
+type Hash struct {
+	encoding int         // The encoding type of the hash
+	listpack [][2]string // Using Go slice to simulate the listpack
+	dict     map[string]string
+}
+
+// MakeHash creates a new Hash instance
+func MakeHash() *Hash {
+	return &Hash{
+		encoding: encodingListpack, // Use listpack encoding by default
+		listpack: make([][2]string, 0),
+		dict:     nil,              // Initialize map only when needed
+	}
+}
+
+// Get retrieves the value associated with the given key from the hash
+func (h *Hash) Get(field string) (val string, exists bool) {
+	// If using listpack encoding, search in the listpack
+	if h.encoding == encodingListpack {
+		for _, entry := range h.listpack {
+			if entry[0] == field {
+				return entry[1], true
+			}
+		}
+		return "", false
+	}
+
+	// Otherwise search in the hashtable
+	val, exists = h.dict[field]
+	return
+}
+
+// Set sets the value for the given key in the hash
+// If the field already exists, it updates the value and returns 0 else 1 if it is a new entry
+func (h *Hash) Set(field, value string) int {
+	if h.encoding == encodingListpack {
+		// If the size of the listpack exceeds the maximum entries or the length of the field or value exceeds the maximum value, convert to hash table
+		if len(h.listpack) >= hashMaxListpackEntries || len(field) > hashMaxListpackValue || len(value) > hashMaxListpackValue {
+			h.convertToHashTable()
+		}
+	}
+
+	if h.encoding == encodingListpack {
+		// Search for the field in the listpack
+		for i, entry := range h.listpack {
+			if entry[0] == field {
+				// Update the value
+				h.listpack[i][1] = value
+				return 0 // Updated existing entry
+			}
+		}
+		// Add new entry
+		h.listpack = append(h.listpack, [2]string{field, value})
+		return 1 // Added new entry
+	}
+
+	// If using hashtable encoding
+	if h.dict == nil {
+		h.dict = make(map[string]string)
+	}
+	_, exists := h.dict[field]
+	h.dict[field] = value
+	if exists {
+		return 0 // Updated existing entry
+	}
+	return 1 // Added new entry
+}
+
+// Delete removes the given field from the hash
+func (h *Hash) Delete(field string) int {
+	count := 0
+
+	if h.encoding == encodingListpack {
+		for i, entry := range h.listpack {
+			if entry[0] == field {
+				// Delete the entry and move the last entry to the current position to reduce the size
+				// Because hash doesn't need to maintain order, we can just swap the last entry with the current one
+				lastIndex := len(h.listpack) - 1
+				h.listpack[i] = h.listpack[lastIndex]
+				h.listpack = h.listpack[:lastIndex]
+				count++
+				break
+			}
+		}
+	} else {
+		// Delete the field from the hash table
+		if _, exists := h.dict[field]; exists {
+			delete(h.dict, field)
+			count++
+		}
+	}
+
+	return count
+}
+
+// Len returns the number of entries in the hash
+func (h *Hash) Len() int {
+	if h.encoding == encodingListpack {
+		return len(h.listpack)
+	}
+	return len(h.dict)
+}
+
+// GetAll returns all the fields and values in the hash
+func (h *Hash) GetAll() map[string]string {
+	result := make(map[string]string)
+	
+	if h.encoding == encodingListpack {
+		for _, entry := range h.listpack {
+			result[entry[0]] = entry[1]
+		}
+	} else {
+		for k, v := range h.dict {
+			result[k] = v
+		}
+	}
+	
+	return result
+}
+
+// Fields returns all the fields in the hash
+func (h *Hash) Fields() []string {
+	if h.encoding == encodingListpack {
+		fields := make([]string, len(h.listpack))
+		for i, entry := range h.listpack {
+			fields[i] = entry[0]
+		}
+		return fields
+	}
+	
+	fields := make([]string, 0, len(h.dict))
+	for field := range h.dict {
+		fields = append(fields, field)
+	}
+	return fields
+}
+
+// Values returns all the values in the hash
+func (h *Hash) Values() []string {
+	if h.encoding == encodingListpack {
+		values := make([]string, len(h.listpack))
+		for i, entry := range h.listpack {
+			values[i] = entry[1]
+		}
+		return values
+	}
+	
+	values := make([]string, 0, len(h.dict))
+	for _, value := range h.dict {
+		values = append(values, value)
+	}
+	return values
+}
+
+// Exists checks if the field exists in the hash
+func (h *Hash) Exists(field string) bool {
+	_, exists := h.Get(field)
+	return exists
+}
+
+// convertToHashTable converts the hash from listpack to hash table encoding
+func (h *Hash) convertToHashTable() {
+	if h.encoding == encodingHashTable {
+		return
+	}
+
+	h.dict = make(map[string]string, len(h.listpack))
+
+	for _, entry := range h.listpack {
+		h.dict[entry[0]] = entry[1]
+	}
+
+	h.encoding = encodingHashTable
+
+	h.listpack = nil // Clear the listpack to free up memory
+}
+
+// Encoding returns the encoding type of the hash
+func (h *Hash) Encoding() int {
+	return h.encoding
+}
+
+// Clear clears all entries in the hash
+func (h *Hash) Clear() {
+	h.listpack = nil
+	h.dict = nil
+	h.encoding = encodingListpack
+}
+```
+
+## 在数据库层实现 Hash 命令
+
+接下来，我们在 database 包下实现 Hash 相关的命令处理函数，创建 `hash.go` 文件：
+
+```go filename="database/hash.go"
+package database
+
+import (
+	"math/rand"
+	"redigo/datastruct/hash"
+	"redigo/interface/database"
+	"redigo/interface/resp"
+	"redigo/lib/utils"
+	"redigo/resp/reply"
+	"strconv"
+	"strings"
+)
+
+// getAsHash returns a hash value stored at key, or nil if it doesn't exist
+func (db *DB) getAsHash(key string) (*hash.Hash, bool) {
+	entity, exists := db.GetEntity(key)
+	if !exists {
+		return nil, false
+	}
+	
+	hashObj, ok := entity.Data.(*hash.Hash)
+	if !ok {
+		return nil, true // key exists but not a hash
+	}
+	return hashObj, true
+}
+
+// getOrCreateHash gets or creates a hash
+func (db *DB) getOrCreateHash(key string) (*hash.Hash, bool) {
+	hashObj, exists := db.getAsHash(key)
+	if exists {
+		return hashObj, true
+	}
+	
+	// Create a new hash
+	hashObj = hash.MakeHash()
+	db.PutEntity(key, &database.DataEntity{Data: hashObj})
+	return hashObj, false
+}
+
+// execHSet implements the HSET command
+// HSET key field value [field value ...]
+func execHSet(db *DB, args [][]byte) resp.Reply {
+	key := string(args[0])
+	
+	// Check if we have field-value pairs
+	if (len(args)-1)%2 != 0 {
+		return reply.MakeErrReply("wrong number of arguments for HSET")
+	}
+	
+	hashObj, _ := db.getOrCreateHash(key)
+	
+	// Process field-value pairs
+	fieldCount := (len(args) - 1) / 2
+	addedCount := 0
+	
+	for i := 0; i < fieldCount; i++ {
+		field := string(args[1+i*2])
+		value := string(args[2+i*2])
+		result := hashObj.Set(field, value)
+		addedCount += result
+	}
+	
+	db.addAof(utils.ToCmdLineWithName("HSET", args...))
+	return reply.MakeIntReply(int64(addedCount))
+}
+
+// execHGet implements the HGET command
+// HGET key field
+func execHGet(db *DB, args [][]byte) resp.Reply {
+	key := string(args[0])
+	field := string(args[1])
+	
+	hashObj, exists := db.getAsHash(key)
+	if !exists {
+		return reply.MakeNullBulkReply()
+	}
+	
+	value, exists := hashObj.Get(field)
+	if !exists {
+		return reply.MakeNullBulkReply()
+	}
+	
+	return reply.MakeBulkReply([]byte(value))
+}
+
+// execHExists implements the HEXISTS command
+// HEXISTS key field
+func execHExists(db *DB, args [][]byte) resp.Reply {
+	key := string(args[0])
+	field := string(args[1])
+	
+	hashObj, exists := db.getAsHash(key)
+	if !exists {
+		return reply.MakeIntReply(0)
+	}
+	
+	if hashObj.Exists(field) {
+		return reply.MakeIntReply(1)
+	}
+	return reply.MakeIntReply(0)
+}
+
+// execHDel implements the HDEL command
+// HDEL key field [field ...]
+func execHDel(db *DB, args [][]byte) resp.Reply {
+	key := string(args[0])
+	
+	hashObj, exists := db.getAsHash(key)
+	if !exists {
+		return reply.MakeIntReply(0)
+	}
+	
+	deleted := 0
+	for _, field := range args[1:] {
+		deleted += hashObj.Delete(string(field))
+	}
+	
+	if hashObj.Len() == 0 {
+		db.Remove(key)
+	}
+	
+	if deleted > 0 {
+		db.addAof(utils.ToCmdLineWithName("HDEL", args...))
+	}
+	
+	return reply.MakeIntReply(int64(deleted))
+}
+
+// execHLen implements the HLEN command
+// HLEN key
+func execHLen(db *DB, args [][]byte) resp.Reply {
+	key := string(args[0])
+	
+	hashObj, exists := db.getAsHash(key)
+	if !exists {
+		return reply.MakeIntReply(0)
+	}
+	
+	return reply.MakeIntReply(int64(hashObj.Len()))
+}
+
+// execHGetAll implements the HGETALL command
+// HGETALL key
+func execHGetAll(db *DB, args [][]byte) resp.Reply {
+	key := string(args[0])
+	
+	hashObj, exists := db.getAsHash(key)
+	if !exists {
+		return reply.MakeEmptyMultiBulkReply()
+	}
+	
+	allMap := hashObj.GetAll()
+	result := make([][]byte, 0, len(allMap)*2)
+	
+	for field, value := range allMap {
+		result = append(result, []byte(field))
+		result = append(result, []byte(value))
+	}
+	
+	return reply.MakeMultiBulkReply(result)
+}
+
+// execHKeys implements the HKEYS command
+// HKEYS key
+func execHKeys(db *DB, args [][]byte) resp.Reply {
+	key := string(args[0])
+	
+	hashObj, exists := db.getAsHash(key)
+	if !exists {
+		return reply.MakeEmptyMultiBulkReply()
+	}
+	
+	fields := hashObj.Fields()
+	result := make([][]byte, len(fields))
+	
+	for i, field := range fields {
+		result[i] = []byte(field)
+	}
+	
+	return reply.MakeMultiBulkReply(result)
+}
+
+// execHVals implements the HVALS command
+// HVALS key
+func execHVals(db *DB, args [][]byte) resp.Reply {
+	key := string(args[0])
+	
+	hashObj, exists := db.getAsHash(key)
+	if !exists {
+		return reply.MakeEmptyMultiBulkReply()
+	}
+	
+	values := hashObj.Values()
+	result := make([][]byte, len(values))
+	
+	for i, value := range values {
+		result[i] = []byte(value)
+	}
+	
+	return reply.MakeMultiBulkReply(result)
+}
+
+// execHMGet implements the HMGET command
+// HMGET key field [field ...]
+func execHMGet(db *DB, args [][]byte) resp.Reply {
+	key := string(args[0])
+	
+	hashObj, exists := db.getAsHash(key)
+	if !exists {
+		result := make([][]byte, len(args)-1)
+		for i := range result {
+			result[i] = nil
+		}
+		return reply.MakeMultiBulkReply(result)
+	}
+	
+	result := make([][]byte, len(args)-1)
+	for i, field := range args[1:] {
+		value, exists := hashObj.Get(string(field))
+		if exists {
+			result[i] = []byte(value)
+		} else {
+			result[i] = nil
+		}
+	}
+	
+	return reply.MakeMultiBulkReply(result)
+}
+
+// execHMSet implements the HMSET command
+// HMSET key field value [field value ...]
+func execHMSet(db *DB, args [][]byte) resp.Reply {
+	key := string(args[0])
+	
+	if (len(args)-1)%2 != 0 {
+		return reply.MakeErrReply("wrong number of arguments for HMSET")
+	}
+	
+	hashObj, _ := db.getOrCreateHash(key)
+	
+	for i := 1; i < len(args); i += 2 {
+		field := string(args[i])
+		value := string(args[i+1])
+		hashObj.Set(field, value)
+	}
+	
+	db.addAof(utils.ToCmdLineWithName("HMSET", args...))
+	return reply.MakeOKReply()
+}
+
+// execHSetNX implements the HSETNX command
+// HSETNX key field value
+func execHSetNX(db *DB, args [][]byte) resp.Reply {
+	key := string(args[0])
+	field := string(args[1])
+	value := string(args[2])
+	
+	hashObj, _ := db.getOrCreateHash(key)
+	
+	if hashObj.Exists(field) {
+		return reply.MakeIntReply(0)
+	}
+	
+	hashObj.Set(field, value)
+	db.addAof(utils.ToCmdLineWithName("HSETNX", args...))
+	return reply.MakeIntReply(1)
+}
+
+// execHEncoding returns the encoding of the hash (custom command)
+// HENCODING key
+func execHEncoding(db *DB, args [][]byte) resp.Reply {
+	key := string(args[0])
+	
+	hashObj, exists := db.getAsHash(key)
+	if !exists {
+		return reply.MakeNullBulkReply()
+	}
+	
+	return reply.MakeIntReply(int64(hashObj.Encoding()))
+}
+
+func init() {
+	// Register hash commands
+	RegisterCommand("HSET", execHSet, -3)
+	RegisterCommand("HGET", execHGet, 3)
+	RegisterCommand("HEXISTS", execHExists, 3)
+	RegisterCommand("HDEL", execHDel, -3)
+	RegisterCommand("HLEN", execHLen, 2)
+	RegisterCommand("HGETALL", execHGetAll, 2)
+	RegisterCommand("HKEYS", execHKeys, 2)
+	RegisterCommand("HVALS", execHVals, 2)
+	RegisterCommand("HMGET", execHMGet, -3)
+	RegisterCommand("HMSET", execHMSet, -4)
+	RegisterCommand("HSETNX", execHSetNX, 4)
+	RegisterCommand("HENCODING", execHEncoding, 2) // 自定义命令，用于检查编码方式
+}
+```
+
+## 注册集群路由
+
+为了让我们的 Hash 命令在集群模式下也能正常工作，我们需要在集群路由中注册这些命令。在 router.go 文件中添加以下代码：
+
+```go filename="cluster/router.go"
+func makeRouter() map[string]CmdFunc {
+	routerMap := make(map[string]CmdFunc)
+	// ... 原有代码 ...
+
+	// Hash operations
+	routerMap["hset"] = defaultFunc      // hset key field value
+	routerMap["hsetnx"] = defaultFunc    // hsetnx key field value
+	routerMap["hget"] = defaultFunc      // hget key field
+	routerMap["hexists"] = defaultFunc   // hexists key field
+	routerMap["hdel"] = defaultFunc      // hdel key field [field ...]
+	routerMap["hlen"] = defaultFunc      // hlen key
+	routerMap["hgetall"] = defaultFunc   // hgetall key
+	routerMap["hkeys"] = defaultFunc     // hkeys key
+	routerMap["hvals"] = defaultFunc     // hvals key
+	routerMap["hmget"] = defaultFunc     // hmget key field [field ...]
+	routerMap["hmset"] = defaultFunc     // hmset key field value [field value ...]
+	routerMap["hrandfield"] = defaultFunc // hrandfield key [count]
+	routerMap["hencoding"] = defaultFunc  // hencoding key (custom command)
+
+	return routerMap
+}
+```
+
+## 优化内存使用
+
+我们的实现采用了与 Redis 类似的内存优化策略：
+
+1. 对于小型 Hash（字段数量少、字段值小），使用 listpack 编码，这种方式节省内存但查找性能较低（O(n)时间复杂度）
+2. 当哈希表变大或者包含大字段时，自动转换为 hashtable 编码，提高查询性能（O(1)时间复杂度）但占用更多内存
+
+这种优化策略是 Redis 中的常用做法，在我们的实现中：
+- `listpack` 使用二维切片实现，按顺序存储字段-值对
+- `hashtable` 使用 Go 的内置 map 实现，提供快速的查找性能
+
+## 测试哈希命令
+
+### 测试指令
+
+启动 Redis 服务器，使用 `redis-cli` 连接并测试我们实现的 Hash 命令：
+
+```bash
+redis-cli -p 6380
+127.0.0.1:6380> HSET user name "John"
+(integer) 1
+127.0.0.1:6380> HSET user age "30"
+(integer) 1
+127.0.0.1:6380> HGET user name
+"John"
+127.0.0.1:6380> HEXISTS user name
+(integer) 1
+127.0.0.1:6380> HEXISTS user gender
+(integer) 0
+127.0.0.1:6380> HGETALL user
+1) "name"
+2) "John"
+3) "age"
+4) "30"
+127.0.0.1:6380> HKEYS user
+1) "name"
+2) "age"
+127.0.0.1:6380> HVALS user
+1) "John"
+2) "30"
+127.0.0.1:6380> HLEN user
+(integer) 2
+127.0.0.1:6380> HMGET user name age phone
+1) "John"
+2) "30"
+3) (nil)
+127.0.0.1:6380> HSETNX user name "Jane"
+(integer) 0
+127.0.0.1:6380> HSETNX user gender "female"
+(integer) 1
+127.0.0.1:6380> HGET user gender
+"female"
+127.0.0.1:6380> HDEL user age
+(integer) 1
+127.0.0.1:6380> HGETALL user
+1) "name"
+2) "John"
+5) "gender"
+6) "female"
+127.0.0.1:6380> HENCODING user
+(integer) 0
+```
+
+### 编写单元测试
+
+我们怎么测试是否实现了切换底层数据结构的功能呢？我们不可能手动执行 `SET` 指令来不断添加大量数据吧，这样太麻烦了。
+
+我们可以编写一个单元测试，在 `datastruct/hash/hash_test.go` 文件中添加以下测试用例：
+
+单元测试用于验证数据结构本身的功能正确性，测试方法包括：
+
+- `TestMakeHash`：测试创建新哈希结构
+- `TestSetAndGet`：测试基本的设置和获取操作
+- `TestDelete`：测试删除字段
+- `TestEncoding`：测试编码转换（listpack → hashtable），首先，插入少量小数据（10条），编码仍是 listpack。插入一个大数据（value很长，超过 hashMaxListpackValue），应该触发编码切换到 hashtable。然后验证之前的旧数据是否存在。
+- `TestLargeNumberOfEntries`：测试大量条目导致的编码转换
+- `TestOtherOperations`：测试其他哈希操作（Len、Exists、GetAll 等）
+
+```go filename="datastruct/hash/hash_test.go"
+package hash
+
+import (
+	"strconv"
+	"testing"
+)
+
+// TestMakeHash tests the creation of a new hash structure
+func TestMakeHash(t *testing.T) {
+	h := MakeHash()
+
+	if h == nil {
+		t.Fatal("Failed to create a new hash")
+	}
+
+	if h.encoding != encodingListpack {
+		t.Errorf("New hash should use listpack encoding by default, got %d", h.encoding)
+	}
+
+	if len(h.listpack) != 0 {
+		t.Errorf("New hash should have empty listpack, got %d items", len(h.listpack))
+	}
+}
+
+// TestSetAndGet tests basic set and get operations
+func TestSetAndGet(t *testing.T) {
+	h := MakeHash()
+
+	// Test setting a new field
+	result := h.Set("name", "test")
+	if result != 1 {
+		t.Errorf("Expected Set to return 1 for new field, got %d", result)
+	}
+
+	// Test getting an existing field
+	value, exists := h.Get("name")
+	if !exists {
+		t.Error("Expected field to exist after Set")
+	}
+	if value != "test" {
+		t.Errorf("Expected value to be 'test', got '%s'", value)
+	}
+
+	// Test updating an existing field
+	result = h.Set("name", "updated")
+	if result != 0 {
+		t.Errorf("Expected Set to return 0 for existing field, got %d", result)
+	}
+
+	value, exists = h.Get("name")
+	if !exists {
+		t.Error("Expected field to exist after update")
+	}
+	if value != "updated" {
+		t.Errorf("Expected value to be 'updated', got '%s'", value)
+	}
+
+	// Test getting non-existent field
+	_, exists = h.Get("nonexistent")
+	if exists {
+		t.Error("Expected non-existent field to return false")
+	}
+}
+
+// TestDelete tests the Delete operation
+func TestDelete(t *testing.T) {
+	h := MakeHash()
+	h.Set("field1", "value1")
+	h.Set("field2", "value2")
+
+	// Test deleting existing field
+	count := h.Delete("field1")
+	if count != 1 {
+		t.Errorf("Expected Delete to return 1 for existing field, got %d", count)
+	}
+
+	// Verify field was deleted
+	_, exists := h.Get("field1")
+	if exists {
+		t.Error("Field should not exist after Delete")
+	}
+
+	// Test deleting non-existent field
+	count = h.Delete("nonexistent")
+	if count != 0 {
+		t.Errorf("Expected Delete to return 0 for non-existent field, got %d", count)
+	}
+}
+
+// TestEncoding tests the encoding conversion from listpack to hashtable
+func TestEncoding(t *testing.T) {
+	h := MakeHash()
+
+	// Initial encoding should be listpack
+	if h.Encoding() != encodingListpack {
+		t.Errorf("Initial encoding should be listpack, got %d", h.Encoding())
+	}
+
+	// Add entries below threshold
+	for i := 0; i < 10; i++ {
+		h.Set("key"+strconv.Itoa(i), "value")
+	}
+
+	// Encoding should still be listpack
+	if h.Encoding() != encodingListpack {
+		t.Errorf("Encoding should remain listpack with few entries, got %d", h.Encoding())
+	}
+
+	// Add large value to trigger conversion
+	largeValue := string(make([]byte, hashMaxListpackValue+1))
+	h.Set("largeKey", largeValue)
+
+	// Encoding should now be hashtable
+	if h.Encoding() != encodingHashTable {
+		t.Errorf("Encoding should be hashtable after large value, got %d", h.Encoding())
+	}
+
+	// Verify data integrity after conversion
+	for i := 0; i < 10; i++ {
+		val, exists := h.Get("key" + strconv.Itoa(i))
+		if !exists || val != "value" {
+			t.Errorf("Data integrity issue after encoding conversion")
+		}
+	}
+}
+
+// TestLargeNumberOfEntries tests conversion due to many entries
+func TestLargeNumberOfEntries(t *testing.T) {
+	h := MakeHash()
+
+	// Add entries to trigger conversion based on count
+	for i := 0; i < hashMaxListpackEntries+1; i++ {
+		h.Set("key"+strconv.Itoa(i), "value")
+	}
+
+	// Encoding should now be hashtable
+	if h.Encoding() != encodingHashTable {
+		t.Errorf("Encoding should be hashtable after exceeding entry limit, got %d", h.Encoding())
+	}
+
+	// Verify some random entries
+	for i := 0; i < 10; i++ {
+		val, exists := h.Get("key" + strconv.Itoa(i))
+		if !exists || val != "value" {
+			t.Errorf("Data integrity issue after encoding conversion")
+		}
+	}
+}
+
+// TestOtherOperations tests remaining hash operations
+func TestOtherOperations(t *testing.T) {
+	h := MakeHash()
+	h.Set("field1", "value1")
+	h.Set("field2", "value2")
+
+	// Test Len
+	if h.Len() != 2 {
+		t.Errorf("Expected length 2, got %d", h.Len())
+	}
+
+	// Test Exists
+	if !h.Exists("field1") {
+		t.Error("Expected field1 to exist")
+	}
+	if h.Exists("nonexistent") {
+		t.Error("Expected nonexistent field to not exist")
+	}
+
+	// Test GetAll
+	all := h.GetAll()
+	if len(all) != 2 || all["field1"] != "value1" || all["field2"] != "value2" {
+		t.Error("GetAll returned incorrect data")
+	}
+
+	// Test Fields
+	fields := h.Fields()
+	if len(fields) != 2 {
+		t.Errorf("Expected 2 fields, got %d", len(fields))
+	}
+
+	// Fields content check (order may vary)
+	fieldMap := make(map[string]bool)
+	for _, f := range fields {
+		fieldMap[f] = true
+	}
+	if !fieldMap["field1"] || !fieldMap["field2"] {
+		t.Error("Fields returned incorrect data")
+	}
+
+	// Test Values
+	values := h.Values()
+	if len(values) != 2 {
+		t.Errorf("Expected 2 values, got %d", len(values))
+	}
+
+	// Values content check (order may vary)
+	valueMap := make(map[string]bool)
+	for _, v := range values {
+		valueMap[v] = true
+	}
+	if !valueMap["value1"] || !valueMap["value2"] {
+		t.Error("Values returned incorrect data")
+	}
+}
+```
+
+运行单元测试可以验证底层数据结构的功能完整性：
+
+```bash
+cd /Users/orangejuice/codes/redigo/datastruct/hash
+go test -v
+```
+
+情况下都能正常工作。
+
+```bash
+(base) orangejuice@Cheng-Zihans-Mac hash % go test -v
+=== RUN   TestMakeHash
+--- PASS: TestMakeHash (0.00s)
+=== RUN   TestSetAndGet
+--- PASS: TestSetAndGet (0.00s)
+=== RUN   TestDelete
+--- PASS: TestDelete (0.00s)
+=== RUN   TestEncoding
+--- PASS: TestEncoding (0.00s)
+=== RUN   TestLargeNumberOfEntries
+--- PASS: TestLargeNumberOfEntries (0.00s)
+=== RUN   TestOtherOperations
+--- PASS: TestOtherOperations (0.00s)
+PASS
+ok      redigo/datastruct/hash  1.410s
+```
+
+## 总结
+
+在本章中，我们完成了 Redis Hash 数据结构的实现，包括：
+
+1. 设计并实现了具有内存优化特性的 Hash 数据结构
+2. 实现了 Hash 相关的常用命令
+3. 支持自动编码转换，实现空间和时间的平衡
+4. 注册了集群路由，使 Hash 命令在集群模式下可用
+
+通过使用混合编码方案，我们的实现既支持高效率的小型哈希表（使用 listpack 编码），又能在需要时转换为更适合大型数据集的 hashtable 编码。这种方式与 Redis 的实际实现非常接近，既保证了功能完整性，又兼顾了性能和内存使用效率。
+
