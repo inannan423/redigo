@@ -530,6 +530,26 @@ func execSDiffStore(db *DB, args [][]byte) resp.Reply {
 	return reply.MakeIntReply(int64(newSet.Len()))
 }
 
+// SetType represents the type of the set (intset or hashset)
+func execSetType(db *DB, args [][]byte) resp.Reply {
+	key := string(args[0])
+
+	// Get set
+	setObj, errReply := getAsSet(db, key)
+	if errReply != nil {
+		return errReply
+	}
+	if setObj == nil {
+		return reply.MakeNullBulkReply()
+	}
+
+	// Determine set type
+	if setObj.IsIntSet() {
+		return reply.MakeStatusReply("intset")
+	}
+	return reply.MakeStatusReply("hashset")
+}
+
 func init() {
 	RegisterCommand("SADD", execSAdd, -3)
 	RegisterCommand("SCARD", execSCard, 2)
@@ -544,4 +564,5 @@ func init() {
 	RegisterCommand("SINTERSTORE", execSInterStore, -3)
 	RegisterCommand("SDIFF", execSDiff, -2)
 	RegisterCommand("SDIFFSTORE", execSDiffStore, -3)
+	RegisterCommand("SETTYPE", execSetType, 2)
 }

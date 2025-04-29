@@ -10,4 +10,5 @@ type Set interface {
 	ForEach(consumer func(member string) bool) // Iterate over all members
 	RandomMembers(count int) []string          // Get random members from the set
 	RandomDistinctMembers(count int) []string  // Get distinct random members
+	IsIntSet() bool                            // Check if the set is an IntSet
 }

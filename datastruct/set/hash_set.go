@@ -176,3 +176,8 @@ func (set *HashSet) convertToHashTable() {
 
 	set.isIntset = false
 }
+
+// IsIntSet checks if the set is an IntSet
+func (set *HashSet) IsIntSet() bool {
+	return set.isIntset
+}
