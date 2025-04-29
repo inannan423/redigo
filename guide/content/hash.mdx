@@ -300,22 +300,11 @@ func (h *Hash) Clear() {
 
 ## 在数据库层实现 Hash 命令
 
-接下来，我们在 database 包下实现 Hash 相关的命令处理函数，创建 `hash.go` 文件：
+接下来，我们在 database 包下实现 Hash 相关的命令处理函数。
 
-```go filename="database/hash.go"
-package database
+首先需要在 `db.go` 中添加两个方法：
 
-import (
-	"math/rand"
-	"redigo/datastruct/hash"
-	"redigo/interface/database"
-	"redigo/interface/resp"
-	"redigo/lib/utils"
-	"redigo/resp/reply"
-	"strconv"
-	"strings"
-)
-
+```go filename="database/db.go"
 // getAsHash returns a hash value stored at key, or nil if it doesn't exist
 func (db *DB) getAsHash(key string) (*hash.Hash, bool) {
 	entity, exists := db.GetEntity(key)
@@ -342,6 +331,25 @@ func (db *DB) getOrCreateHash(key string) (*hash.Hash, bool) {
 	db.PutEntity(key, &database.DataEntity{Data: hashObj})
 	return hashObj, false
 }
+```
+
+这两个方法用于获取或创建一个 Hash 对象。`getAsHash` 方法用于获取存储在数据库中的 Hash 对象，如果不存在则返回 nil；`getOrCreateHash` 方法用于获取或创建一个新的 Hash 对象。
+
+创建 `hash.go` 文件：
+
+```go filename="database/hash.go"
+package database
+
+import (
+	"math/rand"
+	"redigo/datastruct/hash"
+	"redigo/interface/database"
+	"redigo/interface/resp"
+	"redigo/lib/utils"
+	"redigo/resp/reply"
+	"strconv"
+	"strings"
+)
 
 // execHSet implements the HSET command
 // HSET key field value [field value ...]

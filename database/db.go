@@ -3,6 +3,7 @@ package database
 import (
 	"redigo/datastruct/dict"
 	"redigo/datastruct/hash"
+	"redigo/datastruct/set"
 	"redigo/interface/database"
 	"redigo/interface/resp"
 	"redigo/resp/reply"
@@ -123,6 +124,37 @@ func (db *DB) getOrCreateHash(key string) (*hash.Hash, bool) {
 		Data: hashObj,
 	})
 	return hashObj, false
+}
+
+// getAsSet returns a set.Set from database
+func getAsSet(db *DB, key string) (set.Set, reply.ErrorReply) {
+	entity, exists := db.GetEntity(key)
+	if !exists {
+		return nil, nil
+	}
+
+	setObj, ok := entity.Data.(set.Set)
+	if !ok {
+		return nil, reply.MakeWrongTypeErrReply()
+	}
+	return setObj, nil
+}
+
+// getOrInitSet returns a set.Set for the given key
+// creates a new one if it doesn't exist
+func getOrInitSet(db *DB, key string) (set.Set, bool, reply.ErrorReply) {
+	setObj, errReply := getAsSet(db, key)
+	if errReply != nil {
+		return nil, false, errReply
+	}
+
+	isNew := false
+	if setObj == nil {
+		setObj = set.NewHashSet()
+		isNew = true
+	}
+
+	return setObj, isNew, nil
 }
 
 // Removes deletes the DataEntity associated with the given keys from the database

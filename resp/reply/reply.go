@@ -119,3 +119,8 @@ func MakeIntReply(code int64) *IntReply {
 func IsErrReply(reply resp.Reply) bool {
 	return reply.ToBytes()[0] == '-'
 }
+
+// IsMultiBulkReply 判断是否是“多条回复”
+func IsMultiBulkReply(reply resp.Reply) bool {
+	return reply.ToBytes()[0] == '*'
+}
