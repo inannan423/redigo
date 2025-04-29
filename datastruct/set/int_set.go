@@ -197,7 +197,7 @@ func (is *IntSet) removeAt(pos int) {
 	offset := pos * int(is.encoding)
 	endOffset := int(is.length) * int(is.encoding)
 
-	// Shift elements
+	// Move elements after pos forward
 	copy(is.contents[offset:], is.contents[offset+int(is.encoding):endOffset])
 
 	// Shrink contents

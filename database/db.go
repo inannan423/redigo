@@ -4,6 +4,7 @@ import (
 	"redigo/datastruct/dict"
 	"redigo/datastruct/hash"
 	"redigo/datastruct/set"
+	"redigo/datastruct/zset"
 	"redigo/interface/database"
 	"redigo/interface/resp"
 	"redigo/resp/reply"
@@ -155,6 +156,23 @@ func getOrInitSet(db *DB, key string) (set.Set, bool, reply.ErrorReply) {
 	}
 
 	return setObj, isNew, nil
+}
+
+// getAsZSet retrieves the ZSet stored at key, or creates a new one if it doesn't exist
+func getAsZSet(db *DB, key string) (zset.ZSet, bool) {
+	// Get entity from database
+	entity, exists := db.GetEntity(key)
+	if !exists {
+		return zset.NewZSet(), false
+	}
+
+	// Check if entity is a ZSet
+	zsetObj, ok := entity.Data.(zset.ZSet)
+	if !ok {
+		return nil, true // Key exists but is not a ZSet
+	}
+
+	return zsetObj, true
 }
 
 // Removes deletes the DataEntity associated with the given keys from the database

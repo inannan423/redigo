@@ -12,4 +12,5 @@ export default {
     "list": "链表",
     "hash": "哈希表",
     "set": "集合",
+    "zset": "有序集合",
 }

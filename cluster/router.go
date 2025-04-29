@@ -63,6 +63,15 @@ func makeRouter() map[string]CmdFunc {
 	routerMap["sdiff"] = setDiffFunc                 // sdiff key [key ...]
 	routerMap["sdiffstore"] = setDiffStoreFunc       // sdiffstore destination key [key ...]
 
+	// ZSet operations
+	routerMap["zadd"] = defaultFunc   // zadd key score member [score member ...]
+	routerMap["zscore"] = defaultFunc // zscore key member
+	routerMap["zcard"] = defaultFunc  // zcard key
+	routerMap["zrange"] = defaultFunc // zrange key start stop [WITHSCORES]
+	routerMap["zrem"] = defaultFunc   // zrem key member [member ...]
+	routerMap["zcount"] = defaultFunc // zcount key min max
+	routerMap["zrank"] = defaultFunc  // zrank key member
+
 	return routerMap
 }
 
