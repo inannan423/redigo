@@ -284,6 +284,27 @@ func execZRank(db *DB, args [][]byte) resp.Reply {
 	return reply.MakeIntReply(int64(rank))
 }
 
+// execZTYPE implements the ZTYPE command
+// ZTYPE key returns the type of the key, 0 for listpack, 1 for skiplist
+func execZType(db *DB, args [][]byte) resp.Reply {
+	if len(args) != 1 {
+		return reply.MakeStandardErrorReply("wrong number of arguments for 'ztype' command")
+	}
+
+	key := string(args[0])
+
+	// Get ZSet
+	zsetObj, exists := getAsZSet(db, key)
+	if !exists {
+		return reply.MakeNullBulkReply()
+	}
+	if zsetObj == nil {
+		return reply.MakeWrongTypeErrReply()
+	}
+
+	return reply.MakeIntReply(int64(zsetObj.Encoding()))
+}
+
 // Register ZSET commands
 func init() {
 	RegisterCommand("ZADD", execZAdd, -4)     // key score member [score member ...]
@@ -293,4 +314,5 @@ func init() {
 	RegisterCommand("ZREM", execZRem, -3)     // key member [member ...]
 	RegisterCommand("ZCOUNT", execZCount, 4)  // key min max
 	RegisterCommand("ZRANK", execZRank, 3)    // key member
+	RegisterCommand("ZTYPE", execZType, 2)    // key
 }

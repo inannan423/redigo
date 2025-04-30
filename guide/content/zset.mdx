@@ -1425,3 +1425,148 @@ func (z *zset) GetSkiplist() *skiplist.SkipList {
 	return nil
 }
 ```
+
+然后我们将这几个指令注册：
+
+```go filename="database/zset.go"
+// Register ZSET commands
+func init() {
+	RegisterCommand("ZADD", execZAdd, -4)     // key score member [score member ...]
+	RegisterCommand("ZSCORE", execZScore, 3)  // key member
+	RegisterCommand("ZCARD", execZCard, 2)    // key
+	RegisterCommand("ZRANGE", execZRange, -4) // key start stop [WITHSCORES]
+	RegisterCommand("ZREM", execZRem, -3)     // key member [member ...]
+	RegisterCommand("ZCOUNT", execZCount, 4)  // key min max
+	RegisterCommand("ZRANK", execZRank, 3)    // key member
+}
+```
+
+完整的 ZSET 接口：
+
+```go filename="datastruct/zset/zset.go"
+type ZSet interface {
+	Add(member string, score float64) bool
+	Remove(member string) bool
+	Score(member string) (float64, bool)
+	Exists(member string) bool
+	Count(min, max float64) int
+	Len() int
+	RangeByScore(min, max float64, offset, count int) []string
+	RangeByRank(start, stop int) []string
+	RemoveRangeByRank(start, stop int) int
+	RemoveRangeByScore(min, max float64) int
+	Encoding() int
+	GetSkiplist() *skiplist.SkipList
+}
+```
+
+然后为了适配集群模式，在 `cluster/router.go` 中注册 ZSET 指令：
+
+```go filename="cluster/router.go"
+// ZSet operations
+routerMap["zadd"] = defaultFunc   // zadd key score member [score member ...]
+routerMap["zscore"] = defaultFunc // zscore key member
+routerMap["zcard"] = defaultFunc  // zcard key
+routerMap["zrange"] = defaultFunc // zrange key start stop [WITHSCORES]
+routerMap["zrem"] = defaultFunc   // zrem key member [member ...]
+routerMap["zcount"] = defaultFunc // zcount key min max
+routerMap["zrank"] = defaultFunc  // zrank key member
+```
+
+## 测试
+
+我们实现一个自定义的指令 `ZTYPE` 用于查询当前 key 的底层编码方式：
+
+```go filename="database/zset/zset.go"
+// execZTYPE implements the ZTYPE command
+// ZTYPE key returns the type of the key, 0 for listpack, 1 for skiplist
+func execZType(db *DB, args [][]byte) resp.Reply {
+	if len(args) != 1 {
+		return reply.MakeStandardErrorReply("wrong number of arguments for 'ztype' command")
+	}
+
+	key := string(args[0])
+
+	// Get ZSet
+	zsetObj, exists := getAsZSet(db, key)
+	if !exists {
+		return reply.MakeNullBulkReply()
+	}
+	if zsetObj == nil {
+		return reply.MakeWrongTypeErrReply()
+	}
+
+	return reply.MakeIntReply(int64(zsetObj.Encoding()))
+}
+
+// Register ZTYPE command
+func init() {
+    RegisterCommand("ZTYPE", execZType, 2) // key
+}
+```
+
+然后运行下面的指令进行测试：
+
+```bash
+(base) orangejuice@Mac redigo % redis-cli -p 6380
+127.0.0.1:6380> ZADD myzset 1 "one"
+(integer) 1
+127.0.0.1:6380> ZADD myzset 2 "two" 3 "three"
+(integer) 2
+127.0.0.1:6380> ZCARD myzset
+(integer) 3
+127.0.0.1:6380> ZSCORE myzset "one"
+"1"
+127.0.0.1:6380> ZSCORE myzset "two"
+"2"
+127.0.0.1:6380> ZSCORE myzset "nonexistent"
+(nil)
+127.0.0.1:6380> ZRANGE myzset 0 -1     
+1) "one"
+2) "two"
+3) "three"
+127.0.0.1:6380> ZRANGE myzset 0 1
+1) "one"
+2) "two"
+127.0.0.1:6380> ZRANGE myzset -2 -1
+1) "two"
+2) "three"
+127.0.0.1:6380> ZRANGE myzset 0 -1 WITHSCORES
+1) "one"
+2) "1"
+3) "two"
+4) "2"
+5) "three"
+6) "3"
+127.0.0.1:6380> ZREM myzset "two"
+(integer) 1
+127.0.0.1:6380> ZRANGE myzset 0 -1
+1) "one"
+2) "three"
+127.0.0.1:6380> ZADD myzset 2 "two" 4 "four" 5 "five"
+(integer) 3
+127.0.0.1:6380> ZCOUNT myzset 2 4
+(integer) 3
+127.0.0.1:6380> ZRANGE myzset 0 -1
+1) "one"
+2) "two"
+3) "three"
+4) "four"
+5) "five"
+```
+
+到目前为了，我们就实现了所有的常用的 Redis 数据结构：
+
+- String
+- List
+- Hash
+- Set
+- ZSet (Sorted Set)
+
+## 提交到 GitHub
+
+```bash
+git add .
+git commit -m "feat: implement ZSet"
+git push origin main
+```
