@@ -7,6 +7,7 @@ import (
 	"strconv"
 )
 
+// ZSet encoding types
 const (
 	encodingListpack = iota
 	encodingSkiplist
