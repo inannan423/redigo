@@ -119,7 +119,7 @@ func MakeHash() *Hash {
 	return &Hash{
 		encoding: encodingListpack, // Use listpack encoding by default
 		listpack: make([][2]string, 0),
-		dict:     nil,              // Initialize map only when needed
+		dict:     make(map[string]string),
 	}
 }
 
@@ -135,7 +135,6 @@ func (h *Hash) Get(field string) (val string, exists bool) {
 		return "", false
 	}
 
-	// Otherwise search in the hashtable
 	val, exists = h.dict[field]
 	return
 }
@@ -151,26 +150,22 @@ func (h *Hash) Set(field, value string) int {
 	}
 
 	if h.encoding == encodingListpack {
-		// Search for the field in the listpack
+		// Check if the field already exists in the listpack
 		for i, entry := range h.listpack {
 			if entry[0] == field {
-				// Update the value
 				h.listpack[i][1] = value
 				return 0 // Updated existing entry
 			}
 		}
+
 		// Add new entry
 		h.listpack = append(h.listpack, [2]string{field, value})
-		return 1 // Added new entry
+		return 1
 	}
 
-	// If using hashtable encoding
-	if h.dict == nil {
-		h.dict = make(map[string]string)
-	}
-	_, exists := h.dict[field]
+	_, exsists := h.dict[field]
 	h.dict[field] = value
-	if exists {
+	if exsists {
 		return 0 // Updated existing entry
 	}
 	return 1 // Added new entry
@@ -214,17 +209,16 @@ func (h *Hash) Len() int {
 // GetAll returns all the fields and values in the hash
 func (h *Hash) GetAll() map[string]string {
 	result := make(map[string]string)
-	
+
 	if h.encoding == encodingListpack {
 		for _, entry := range h.listpack {
 			result[entry[0]] = entry[1]
 		}
 	} else {
-		for k, v := range h.dict {
-			result[k] = v
+		for field, value := range h.dict {
+			result[field] = value
 		}
 	}
-	
 	return result
 }
 
@@ -237,7 +231,7 @@ func (h *Hash) Fields() []string {
 		}
 		return fields
 	}
-	
+
 	fields := make([]string, 0, len(h.dict))
 	for field := range h.dict {
 		fields = append(fields, field)
@@ -254,7 +248,7 @@ func (h *Hash) Values() []string {
 		}
 		return values
 	}
-	
+
 	values := make([]string, 0, len(h.dict))
 	for _, value := range h.dict {
 		values = append(values, value)
@@ -341,272 +335,249 @@ func (db *DB) getOrCreateHash(key string) (*hash.Hash, bool) {
 package database
 
 import (
-	"math/rand"
-	"redigo/datastruct/hash"
-	"redigo/interface/database"
 	"redigo/interface/resp"
 	"redigo/lib/utils"
 	"redigo/resp/reply"
-	"strconv"
-	"strings"
 )
 
-// execHSet implements the HSET command
-// HSET key field value [field value ...]
+// HSet sets field in the hash stored at key to value
 func execHSet(db *DB, args [][]byte) resp.Reply {
 	key := string(args[0])
-	
-	// Check if we have field-value pairs
-	if (len(args)-1)%2 != 0 {
-		return reply.MakeErrReply("wrong number of arguments for HSET")
-	}
-	
+	field := string(args[1])
+	value := string(args[2])
+
 	hashObj, _ := db.getOrCreateHash(key)
-	
-	// Process field-value pairs
-	fieldCount := (len(args) - 1) / 2
-	addedCount := 0
-	
-	for i := 0; i < fieldCount; i++ {
-		field := string(args[1+i*2])
-		value := string(args[2+i*2])
-		result := hashObj.Set(field, value)
-		addedCount += result
-	}
-	
+	result := hashObj.Set(field, value)
+
 	db.addAof(utils.ToCmdLineWithName("HSET", args...))
-	return reply.MakeIntReply(int64(addedCount))
+
+	return reply.MakeIntReply(int64(result))
 }
 
-// execHGet implements the HGET command
-// HGET key field
+// HGet gets the value of a field in hash
 func execHGet(db *DB, args [][]byte) resp.Reply {
 	key := string(args[0])
 	field := string(args[1])
-	
-	hashObj, exists := db.getAsHash(key)
+
+	hash, exists := db.getAsHash(key)
 	if !exists {
 		return reply.MakeNullBulkReply()
 	}
-	
-	value, exists := hashObj.Get(field)
+
+	value, exists := hash.Get(field)
 	if !exists {
 		return reply.MakeNullBulkReply()
 	}
-	
+
 	return reply.MakeBulkReply([]byte(value))
 }
 
-// execHExists implements the HEXISTS command
-// HEXISTS key field
+// HExists checks if field exists in hash
 func execHExists(db *DB, args [][]byte) resp.Reply {
 	key := string(args[0])
 	field := string(args[1])
-	
-	hashObj, exists := db.getAsHash(key)
+
+	hash, exists := db.getAsHash(key)
 	if !exists {
 		return reply.MakeIntReply(0)
 	}
-	
-	if hashObj.Exists(field) {
+
+	exists = hash.Exists(field)
+	if exists {
 		return reply.MakeIntReply(1)
 	}
 	return reply.MakeIntReply(0)
 }
 
-// execHDel implements the HDEL command
-// HDEL key field [field ...]
+// HDel deletes fields from hash
 func execHDel(db *DB, args [][]byte) resp.Reply {
 	key := string(args[0])
-	
-	hashObj, exists := db.getAsHash(key)
+
+	hash, exists := db.getAsHash(key)
 	if !exists {
 		return reply.MakeIntReply(0)
 	}
-	
+
 	deleted := 0
 	for _, field := range args[1:] {
-		deleted += hashObj.Delete(string(field))
+		deleted += hash.Delete(string(field))
 	}
-	
-	if hashObj.Len() == 0 {
+
+	if hash.Len() == 0 {
 		db.Remove(key)
 	}
-	
+
 	if deleted > 0 {
-		db.addAof(utils.ToCmdLineWithName("HDEL", args...))
+		db.addAof(utils.ToCmdLineWithName("hdel", args...))
 	}
-	
+
 	return reply.MakeIntReply(int64(deleted))
 }
 
-// execHLen implements the HLEN command
-// HLEN key
+// HLen returns number of fields in hash
 func execHLen(db *DB, args [][]byte) resp.Reply {
 	key := string(args[0])
-	
-	hashObj, exists := db.getAsHash(key)
+
+	hash, exists := db.getAsHash(key)
 	if !exists {
 		return reply.MakeIntReply(0)
 	}
-	
-	return reply.MakeIntReply(int64(hashObj.Len()))
+
+	return reply.MakeIntReply(int64(hash.Len()))
 }
 
-// execHGetAll implements the HGETALL command
-// HGETALL key
+// HGetAll returns all fields and values in hash
 func execHGetAll(db *DB, args [][]byte) resp.Reply {
 	key := string(args[0])
-	
-	hashObj, exists := db.getAsHash(key)
+
+	hash, exists := db.getAsHash(key)
 	if !exists {
 		return reply.MakeEmptyMultiBulkReply()
 	}
-	
-	allMap := hashObj.GetAll()
+
+	allMap := hash.GetAll()
 	result := make([][]byte, 0, len(allMap)*2)
-	
 	for field, value := range allMap {
 		result = append(result, []byte(field))
 		result = append(result, []byte(value))
 	}
-	
+
 	return reply.MakeMultiBulkReply(result)
 }
 
-// execHKeys implements the HKEYS command
-// HKEYS key
+// HKeys returns all fields in hash
 func execHKeys(db *DB, args [][]byte) resp.Reply {
 	key := string(args[0])
-	
-	hashObj, exists := db.getAsHash(key)
+
+	hash, exists := db.getAsHash(key)
 	if !exists {
 		return reply.MakeEmptyMultiBulkReply()
 	}
-	
-	fields := hashObj.Fields()
+
+	fields := hash.Fields()
 	result := make([][]byte, len(fields))
-	
 	for i, field := range fields {
 		result[i] = []byte(field)
 	}
-	
+
 	return reply.MakeMultiBulkReply(result)
 }
 
-// execHVals implements the HVALS command
-// HVALS key
+// HVals returns all values in hash
 func execHVals(db *DB, args [][]byte) resp.Reply {
 	key := string(args[0])
-	
-	hashObj, exists := db.getAsHash(key)
+
+	hash, exists := db.getAsHash(key)
 	if !exists {
 		return reply.MakeEmptyMultiBulkReply()
 	}
-	
-	values := hashObj.Values()
+
+	values := hash.Values()
 	result := make([][]byte, len(values))
-	
 	for i, value := range values {
 		result[i] = []byte(value)
 	}
-	
+
 	return reply.MakeMultiBulkReply(result)
 }
 
-// execHMGet implements the HMGET command
-// HMGET key field [field ...]
+// HMGet returns values for multiple fields in hash
 func execHMGet(db *DB, args [][]byte) resp.Reply {
 	key := string(args[0])
-	
-	hashObj, exists := db.getAsHash(key)
+
+	hash, exists := db.getAsHash(key)
 	if !exists {
-		result := make([][]byte, len(args)-1)
-		for i := range result {
-			result[i] = nil
+		results := make([][]byte, len(args)-1)
+		for i := range results {
+			results[i] = nil
 		}
-		return reply.MakeMultiBulkReply(result)
+		return reply.MakeMultiBulkReply(results)
 	}
-	
-	result := make([][]byte, len(args)-1)
+
+	results := make([][]byte, len(args)-1)
 	for i, field := range args[1:] {
-		value, exists := hashObj.Get(string(field))
+		value, exists := hash.Get(string(field))
 		if exists {
-			result[i] = []byte(value)
+			results[i] = []byte(value)
 		} else {
-			result[i] = nil
+			results[i] = nil
 		}
 	}
-	
-	return reply.MakeMultiBulkReply(result)
+
+	return reply.MakeMultiBulkReply(results)
 }
 
-// execHMSet implements the HMSET command
+// HMSet sets multiple fields in hash
 // HMSET key field value [field value ...]
 func execHMSet(db *DB, args [][]byte) resp.Reply {
 	key := string(args[0])
-	
-	if (len(args)-1)%2 != 0 {
-		return reply.MakeErrReply("wrong number of arguments for HMSET")
+
+	if len(args)%2 == 0 {
+		return reply.MakeStandardErrorReply("ERR wrong number of arguments for 'hmset' command")
 	}
-	
-	hashObj, _ := db.getOrCreateHash(key)
-	
+
+	hash, _ := db.getOrCreateHash(key)
+
 	for i := 1; i < len(args); i += 2 {
 		field := string(args[i])
 		value := string(args[i+1])
-		hashObj.Set(field, value)
+		hash.Set(field, value)
 	}
-	
-	db.addAof(utils.ToCmdLineWithName("HMSET", args...))
+
+	db.addAof(utils.ToCmdLineWithName("hmset", args...))
+
 	return reply.MakeOKReply()
 }
 
-// execHSetNX implements the HSETNX command
+// HEncoding returns the encoding of the hash.
+// 0 for listpack, 1 for dict.
+// This is a diy function to check the encoding of the hash.
+func execHEncoding(db *DB, args [][]byte) resp.Reply {
+	key := string(args[0])
+
+	hash, exists := db.getAsHash(key)
+	if !exists {
+		return reply.MakeNullBulkReply()
+	}
+
+	return reply.MakeIntReply(int64(hash.Encoding()))
+}
+
+// execHSetNX sets field in the hash stored at key to value, only if field does not exist
 // HSETNX key field value
 func execHSetNX(db *DB, args [][]byte) resp.Reply {
 	key := string(args[0])
 	field := string(args[1])
 	value := string(args[2])
-	
-	hashObj, _ := db.getOrCreateHash(key)
-	
-	if hashObj.Exists(field) {
+
+	hash, _ := db.getOrCreateHash(key)
+
+	_, exists := hash.Get(field)
+	if exists {
 		return reply.MakeIntReply(0)
 	}
-	
-	hashObj.Set(field, value)
-	db.addAof(utils.ToCmdLineWithName("HSETNX", args...))
-	return reply.MakeIntReply(1)
-}
 
-// execHEncoding returns the encoding of the hash (custom command)
-// HENCODING key
-func execHEncoding(db *DB, args [][]byte) resp.Reply {
-	key := string(args[0])
-	
-	hashObj, exists := db.getAsHash(key)
-	if !exists {
-		return reply.MakeNullBulkReply()
-	}
-	
-	return reply.MakeIntReply(int64(hashObj.Encoding()))
+	hash.Set(field, value)
+
+	db.addAof(utils.ToCmdLineWithName("HSETNX", args...))
+
+	return reply.MakeIntReply(1)
 }
 
 func init() {
 	// Register hash commands
-	RegisterCommand("HSET", execHSet, -3)
-	RegisterCommand("HGET", execHGet, 3)
-	RegisterCommand("HEXISTS", execHExists, 3)
-	RegisterCommand("HDEL", execHDel, -3)
-	RegisterCommand("HLEN", execHLen, 2)
-	RegisterCommand("HGETALL", execHGetAll, 2)
-	RegisterCommand("HKEYS", execHKeys, 2)
-	RegisterCommand("HVALS", execHVals, 2)
-	RegisterCommand("HMGET", execHMGet, -3)
-	RegisterCommand("HMSET", execHMSet, -4)
-	RegisterCommand("HSETNX", execHSetNX, 4)
-	RegisterCommand("HENCODING", execHEncoding, 2) // 自定义命令，用于检查编码方式
+	RegisterCommand("HSET", execHSet, 4)           // HSET key field value
+	RegisterCommand("HGET", execHGet, 3)           // HGET key field
+	RegisterCommand("HEXISTS", execHExists, 3)     // HEXISTS key field
+	RegisterCommand("HDEL", execHDel, -3)          // HDEL key field [field ...] (at least 2 args plus command name)
+	RegisterCommand("HLEN", execHLen, 2)           // HLEN key
+	RegisterCommand("HGETALL", execHGetAll, 2)     // HGETALL key
+	RegisterCommand("HKEYS", execHKeys, 2)         // HKEYS key
+	RegisterCommand("HVALS", execHVals, 2)         // HVALS key
+	RegisterCommand("HMGET", execHMGet, -3)        // HMGET key field [field ...] (at least 2 args plus command name)
+	RegisterCommand("HMSET", execHMSet, -4)        // HMSET key field value [field value ...] (at least 3 args plus command name)
+	RegisterCommand("HENCODING", execHEncoding, 2) // HENCODING key
+	RegisterCommand("HSETNX", execHSetNX, 4)       // HSETNX key field value
 }
 ```
 
