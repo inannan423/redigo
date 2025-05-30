@@ -1,25 +1,15 @@
 # Redigo
 
-🚀 **从零开始，用 Go 语言手写一个完整的 Redis 服务器！**
+🚀 **从零开始，用 Go 语言手写一个完整的 Redis 服务器**
 
-Redigo 不仅仅是一个 Redis 的 Go 语言实现，更是一个**完整的学习教程项目**。通过详细的分步指南，你将深入理解 Redis 的核心原理，学会从 0 构建一个高性能的内存数据库。
+带有完整项目笔记，没有遗漏任何细节，适合用于学习 Redis 的实现原理。
 
-## 🎯 特点
+## 📖 笔记
 
-- **10+ 章节**的详细教程，从基础到高级循序渐进
-- **代码演进式**教学，每个功能都有对应的 Git 分支
-- 有较为详细的原理讲解
-- **不跳过任何细节，适合初学者和有经验的开发者**
-- 支持集群模式、数据持久化、多种数据结构
-- 遵循 Redis 官方协议规范（RESP）
-- 可以与 Redis 客户端兼容
+### 🌐 在线笔记
+📚 **[完整笔记 - 在线阅读](https://redigo.vercel.app/)** 
 
-## 📖 教学指南
-
-### 🌐 在线文档
-📚 **[完整教学指南 - 在线阅读](https://redigo.vercel.app/)** 
-
-本地运行教学文档：
+本地运行笔记：
 ```bash
 cd guide
 npm install
@@ -27,7 +17,7 @@ npm run dev
 # 访问 http://localhost:3000
 ```
 
-### 教程目录
+### 笔记目录
 
 #### 🏗️ 基础架构
 1. **[TCP 服务器搭建](https://redigo.vercel.app/tcp)** 
@@ -148,26 +138,26 @@ SELECT index                  # 选择数据库
 ### 环境要求
 - Go 1.21+
 - Git
-- Node.js 18+ (可选，用于运行教学文档)
+- Node.js 18+ (可选，用于运行笔记)
 
-### 方式一：跟随教程学习 📚
+### 查看笔记的方式
 ```bash
 # 1. 克隆项目
 git clone https://github.com/inannan423/redigo.git
 cd redigo
 
-# 2. 启动教学文档（可选，可以访问 https://redigo.vercel.app）
+# 2. 启动笔记（可选，可以访问 https://redigo.vercel.app）
 cd guide
 npm install
 npm run dev
 # 访问 http://localhost:3000 开始学习
 
 
-# 3. 按教程进度切换分支学习
+# 3. 按笔记进度切换分支学习
 git checkout tcp-server    # 第一章：TCP 服务器
 git checkout resp-parser   # 第二章：RESP 协议
 git checkout database      # 第三章：数据库核心
-# ... 更多分支见教程
+# ... 更多分支见笔记
 ```
 
 ### 方式二：直接运行完整版 🏃‍♂️
@@ -211,14 +201,13 @@ TODO: 添加性能测试结果
 
 ## 🤝 贡献指南
 
-我们欢迎各种形式的贡献！
+欢迎贡献！
 
 - 🐛 **Bug 修复**：发现问题请提交 Issue，或者直接提交 Commit
-- 📚 **文档改进**：让教程更清晰易懂
+- 📚 **文档改进**：让笔记更清晰易懂
 - ✨ **新功能**：实现更多 Redis 命令
-- 🎯 **性能优化**：让 Redigo 更快
+- 🎯 **性能优化**：优化 Redigo 的性能
 - 🧪 **测试用例**：提高代码覆盖率
-- 📝 **教程反馈**：改进学习体验
 
 ### 如何贡献
 1. Fork 本项目
@@ -229,7 +218,7 @@ TODO: 添加性能测试结果
 
 ## 💬 学习交流
 
-- 📖 **教程问题**：查看[在线文档](https://redigo-guide.vercel.app)
+- 📖 **笔记问题**：查看[在线文档](https://redigo.vercel.app)
 - 🐛 **Bug 反馈**：提交 [Issue](https://github.com/inannan423/redigo/issues)
 - 💡 **功能建议**：在 Issues 中标记 `enhancement`
 - 📧 **邮件咨询**：jetzihan@outlook.com
