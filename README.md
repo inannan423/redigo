@@ -315,6 +315,8 @@ redis-benchmark -h localhost -p 6380 -n 100000 -c 50 -t set,get,lpush,lpop,lrang
 
 ### 📋 实际测试结果分析
 
+测试环境： MacBook Pro M2, 16GB RAM, macOS 15.2
+
 基于 `redis-benchmark -h localhost -p 6380 -n 100000 -c 50 -t set,get,lpush,lpop,lrange,hset,hget,hdel,hlen,hkeys,hvals,hmget,hmset,hsetnx,sadd,spop,smembers,srem,sinter,sinterstore,sdiff,sdiffstore,zadd,zrem,zcard,zrange,zcount,zrank` 的综合测试结果：
 
 #### 🚀 核心操作性能表现
