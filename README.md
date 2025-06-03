@@ -1,5 +1,8 @@
 # Redigo
 
+<img width="1506" alt="poster" src="https://github.com/user-attachments/assets/de61424e-99d5-45d2-9e24-f6d46b295bda" />
+
+
 🚀 **从零开始，用 Go 语言手写一个完整的 Redis 服务器**
 
 带有完整项目笔记，没有遗漏任何细节，适合用于学习 Redis 的实现原理。
