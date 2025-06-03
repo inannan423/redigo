@@ -15,7 +15,6 @@ import (
 // KeyLockManager manages locks for individual keys
 type KeyLockManager struct {
 	locks sync.Map // map[string]*sync.RWMutex
-	// mutex sync.Mutex // protects the creation of new locks
 }
 
 // NewKeyLockManager creates a new KeyLockManager instance
@@ -27,6 +26,7 @@ func NewKeyLockManager() *KeyLockManager {
 func (klm *KeyLockManager) Lock(key string) {
 	lockInterface, _ := klm.locks.LoadOrStore(key, &sync.RWMutex{})
 	lock := lockInterface.(*sync.RWMutex)
+	// If the lock is locked, it will block until it can acquire the lock
 	lock.Lock()
 }
 
@@ -51,6 +51,14 @@ func (klm *KeyLockManager) RUnlock(key string) {
 		lock := lockInterface.(*sync.RWMutex)
 		lock.RUnlock()
 	}
+}
+
+// CleanupLock removes the lock for a deleted key to prevent memory leaks
+// This should be called when a key is permanently deleted from the database
+func (klm *KeyLockManager) CleanupLock(key string) {
+	// Only delete the lock if no one is using it
+	// In practice, this should be called after ensuring no operations are pending on this key
+	klm.locks.Delete(key)
 }
 
 type DB struct {
@@ -141,7 +149,12 @@ func (db *DB) PutIfAbsent(key string, entity *database.DataEntity) int {
 
 // Remove deletes the DataEntity associated with the given key from the database
 func (db *DB) Remove(key string) int {
-	return db.data.Remove(key)
+	result := db.data.Remove(key)
+	// Clean up the lock for the deleted key to prevent memory leaks
+	if result > 0 {
+		db.lockMgr.CleanupLock(key)
+	}
+	return result
 }
 
 // GetAsHash retrieves the DataEntity associated with the given key and checks if it is a hash
@@ -226,6 +239,8 @@ func (db *DB) Removes(keys ...string) int {
 		_, ok := db.data.Get(key)
 		if ok {
 			db.data.Remove(key)
+			// Clean up the lock for the deleted key to prevent memory leaks
+			db.lockMgr.CleanupLock(key)
 			deleted++
 		}
 	}
@@ -235,6 +250,8 @@ func (db *DB) Removes(keys ...string) int {
 // Flush clears the database by removing all DataEntity objects
 func (db *DB) Flush() {
 	db.data.Clear()
+	// Clear all locks when flushing the database
+	db.lockMgr.locks = sync.Map{}
 }
 
 // WithKeyLock executes the given function with a write lock on the specified key

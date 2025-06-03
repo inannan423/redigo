@@ -191,6 +191,65 @@ func MakeDB() *DB {
 }
 ```
 
+### 锁的删除
+
+为了防止内存泄漏，我们需要在合适的时机删除不再使用的锁。具体来说，当一个 key 被永久删除时，我们应该调用 `CleanupLock` 方法来清理对应的锁。
+
+```go filename="database/db.go"
+// CleanupLock removes the lock for the given key
+func (klm *KeyLockManager) CleanupLock(key string) {
+    klm.locks.Delete(key)
+}
+```
+
+然后在 `DB` 的 `Remove` 方法中调用：
+
+```go filename="database/db.go" {8-12}
+// Remove deletes the DataEntity associated with the given key from the database
+func (db *DB) Remove(key string) int {
+	result := db.data.Remove(key)
+	// Clean up the lock for the deleted key to prevent memory leaks
+	if result > 0 {
+		db.lockMgr.CleanupLock(key)
+	}
+	return result
+}
+```
+
+同时在 `Removes` 方法中也需要确保在删除数据后清理锁：
+
+```go filename="database/db.go"
+// Removes deletes the DataEntity associated with the given keys from the database
+func (db *DB) Removes(keys ...string) int {
+	deleted := 0
+	for _, key := range keys {
+		_, ok := db.data.Get(key)
+		if ok {
+			db.data.Remove(key)
+			// Clean up the lock for the deleted key to prevent memory leaks
+			db.lockMgr.CleanupLock(key)
+			deleted++
+		}
+	}
+	return deleted
+}
+```
+
+在 Flush 时也需要清理所有锁：
+
+```go filename="database/db.go"
+// Flush clears the database by removing all DataEntity objects
+func (db *DB) Flush() {
+	db.data.Clear()
+	// Clear all locks when flushing the database
+	db.lockMgr.locks = sync.Map{}
+}
+```
+
+能在释放锁的时候删除这个锁吗！？
+
+答案是不行。因为在释放锁时，可能有其他 goroutine 正在等待这个锁。如果我们在释放锁时删除它，就会导致其他 goroutine 无法获取到这个锁，从而引发死锁或其他并发问题。
+
 ## 便捷的锁定接口
 
 为了使锁的使用更加便捷和安全，我们在 `DB` 结构体中添加一些高级的锁定方法：
