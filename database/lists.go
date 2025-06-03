@@ -33,23 +33,31 @@ func execLPush(db *DB, args [][]byte) resp.Reply {
 	key := string(args[0])
 	values := args[1:]
 
-	// Get or create list
-	lst, exists := getAsList(db, key)
-	if lst == nil && exists { // Key exists but is not a list
-		return reply.MakeWrongTypeErrReply()
-	}
+	var result resp.Reply
 
-	// Prepend values
-	for _, value := range values {
-		lst.PushFront(value) // Add to the front (left)
-	}
+	// Use key-level locking to prevent concurrent modification of the same list
+	db.WithKeyLock(key, func() {
+		// Get or create list
+		lst, exists := getAsList(db, key)
+		if lst == nil && exists { // Key exists but is not a list
+			result = reply.MakeWrongTypeErrReply()
+			return
+		}
 
-	// Store the updated list
-	db.PutEntity(key, &database.DataEntity{Data: lst})
-	db.addAof(utils.ToCmdLineWithName("LPUSH", args...))
+		// Prepend values
+		for _, value := range values {
+			lst.PushFront(value) // Add to the front (left)
+		}
 
-	// Return the new length of the list
-	return reply.MakeIntReply(int64(lst.Len()))
+		// Store the updated list
+		db.PutEntity(key, &database.DataEntity{Data: lst})
+		db.addAof(utils.ToCmdLineWithName("LPUSH", args...))
+
+		// Return the new length of the list
+		result = reply.MakeIntReply(int64(lst.Len()))
+	})
+
+	return result
 }
 
 // execRPush implements the RPUSH command: Appends one or multiple values to a list
@@ -58,23 +66,31 @@ func execRPush(db *DB, args [][]byte) resp.Reply {
 	key := string(args[0])
 	values := args[1:]
 
-	// Get or create list
-	lst, exists := getAsList(db, key)
-	if lst == nil && exists { // Key exists but is not a list
-		return reply.MakeWrongTypeErrReply()
-	}
+	var result resp.Reply
 
-	// Append values
-	for _, value := range values {
-		lst.PushBack(value) // Add to the back (right)
-	}
+	// Use key-level locking to prevent concurrent modification of the same list
+	db.WithKeyLock(key, func() {
+		// Get or create list
+		lst, exists := getAsList(db, key)
+		if lst == nil && exists { // Key exists but is not a list
+			result = reply.MakeWrongTypeErrReply()
+			return
+		}
 
-	// Store the updated list
-	db.PutEntity(key, &database.DataEntity{Data: lst})
-	db.addAof(utils.ToCmdLineWithName("RPUSH", args...))
+		// Append values
+		for _, value := range values {
+			lst.PushBack(value) // Add to the back (right)
+		}
 
-	// Return the new length of the list
-	return reply.MakeIntReply(int64(lst.Len()))
+		// Store the updated list
+		db.PutEntity(key, &database.DataEntity{Data: lst})
+		db.addAof(utils.ToCmdLineWithName("RPUSH", args...))
+
+		// Return the new length of the list
+		result = reply.MakeIntReply(int64(lst.Len()))
+	})
+
+	return result
 }
 
 // execLPop implements the LPOP command: Removes and returns the first element of the list stored at key
@@ -82,35 +98,45 @@ func execRPush(db *DB, args [][]byte) resp.Reply {
 func execLPop(db *DB, args [][]byte) resp.Reply {
 	key := string(args[0])
 
-	// Get list
-	lst, exists := getAsList(db, key)
-	if !exists {
-		return reply.MakeNullBulkReply()
-	}
-	if lst == nil { // Key exists but is not a list
-		return reply.MakeWrongTypeErrReply()
-	}
+	var result resp.Reply
 
-	// Check if list is empty
-	if lst.Len() == 0 {
-		return reply.MakeNullBulkReply()
-	}
+	// Use key-level locking to prevent concurrent modification of the same list
+	db.WithKeyLock(key, func() {
+		// Get list
+		lst, exists := getAsList(db, key)
+		if !exists {
+			result = reply.MakeNullBulkReply()
+			return
+		}
+		if lst == nil { // Key exists but is not a list
+			result = reply.MakeWrongTypeErrReply()
+			return
+		}
 
-	// Remove and get the first element
-	element := lst.Front()
-	lst.Remove(element)
-	value := element.Value.([]byte)
+		// Check if list is empty
+		if lst.Len() == 0 {
+			result = reply.MakeNullBulkReply()
+			return
+		}
 
-	// If list becomes empty after pop, remove the key
-	if lst.Len() == 0 {
-		db.Remove(key)
-	} else {
-		// Otherwise update the list in database
-		db.PutEntity(key, &database.DataEntity{Data: lst})
-	}
+		// Remove and get the first element
+		element := lst.Front()
+		lst.Remove(element)
+		value := element.Value.([]byte)
 
-	db.addAof(utils.ToCmdLineWithName("LPOP", args...))
-	return reply.MakeBulkReply(value)
+		// If list becomes empty after pop, remove the key
+		if lst.Len() == 0 {
+			db.Remove(key)
+		} else {
+			// Otherwise update the list in database
+			db.PutEntity(key, &database.DataEntity{Data: lst})
+		}
+
+		db.addAof(utils.ToCmdLineWithName("LPOP", args...))
+		result = reply.MakeBulkReply(value)
+	})
+
+	return result
 }
 
 // execRPop implements the RPOP command: Removes and returns the last element of the list stored at key
@@ -118,35 +144,45 @@ func execLPop(db *DB, args [][]byte) resp.Reply {
 func execRPop(db *DB, args [][]byte) resp.Reply {
 	key := string(args[0])
 
-	// Get list
-	lst, exists := getAsList(db, key)
-	if !exists {
-		return reply.MakeNullBulkReply()
-	}
-	if lst == nil { // Key exists but is not a list
-		return reply.MakeWrongTypeErrReply()
-	}
+	var result resp.Reply
 
-	// Check if list is empty
-	if lst.Len() == 0 {
-		return reply.MakeNullBulkReply()
-	}
+	// Use key-level locking to prevent concurrent modification of the same list
+	db.WithKeyLock(key, func() {
+		// Get list
+		lst, exists := getAsList(db, key)
+		if !exists {
+			result = reply.MakeNullBulkReply()
+			return
+		}
+		if lst == nil { // Key exists but is not a list
+			result = reply.MakeWrongTypeErrReply()
+			return
+		}
 
-	// Remove and get the last element
-	element := lst.Back()
-	lst.Remove(element)
-	value := element.Value.([]byte)
+		// Check if list is empty
+		if lst.Len() == 0 {
+			result = reply.MakeNullBulkReply()
+			return
+		}
 
-	// If list becomes empty after pop, remove the key
-	if lst.Len() == 0 {
-		db.Remove(key)
-	} else {
-		// Otherwise update the list in database
-		db.PutEntity(key, &database.DataEntity{Data: lst})
-	}
+		// Remove and get the last element
+		element := lst.Back()
+		lst.Remove(element)
+		value := element.Value.([]byte)
 
-	db.addAof(utils.ToCmdLineWithName("RPOP", args...))
-	return reply.MakeBulkReply(value)
+		// If list becomes empty after pop, remove the key
+		if lst.Len() == 0 {
+			db.Remove(key)
+		} else {
+			// Otherwise update the list in database
+			db.PutEntity(key, &database.DataEntity{Data: lst})
+		}
+
+		db.addAof(utils.ToCmdLineWithName("RPOP", args...))
+		result = reply.MakeBulkReply(value)
+	})
+
+	return result
 }
 
 // execLRange implements the LRANGE command: Returns the specified elements of the list stored at key

@@ -29,29 +29,37 @@ func execSAdd(db *DB, args [][]byte) resp.Reply {
 	key := string(args[0])
 	members := args[1:]
 
-	// Get or create set
-	setObj, isNew, errReply := getOrInitSet(db, key)
-	if errReply != nil {
-		return errReply
-	}
+	var result resp.Reply
 
-	// Add all members
-	count := 0
-	for _, member := range members {
-		count += setObj.Add(string(member))
-	}
+	// Use key-level locking to prevent concurrent modification of the same set
+	db.WithKeyLock(key, func() {
+		// Get or create set
+		setObj, isNew, errReply := getOrInitSet(db, key)
+		if errReply != nil {
+			result = errReply
+			return
+		}
 
-	// Store back to database if it's a new set or any members were added
-	if isNew || count > 0 {
-		db.PutEntity(key, &database.DataEntity{
-			Data: setObj,
-		})
+		// Add all members
+		count := 0
+		for _, member := range members {
+			count += setObj.Add(string(member))
+		}
 
-		// Add to AOF
-		db.addAof(utils.ToCmdLineWithName("SADD", args...))
-	}
+		// Store back to database if it's a new set or any members were added
+		if isNew || count > 0 {
+			db.PutEntity(key, &database.DataEntity{
+				Data: setObj,
+			})
 
-	return reply.MakeIntReply(int64(count))
+			// Add to AOF
+			db.addAof(utils.ToCmdLineWithName("SADD", args...))
+		}
+
+		result = reply.MakeIntReply(int64(count))
+	})
+
+	return result
 }
 
 // execSCard implements SCARD key
@@ -122,38 +130,47 @@ func execSRem(db *DB, args [][]byte) resp.Reply {
 	key := string(args[0])
 	members := args[1:]
 
-	// Get set
-	setObj, errReply := getAsSet(db, key)
-	if errReply != nil {
-		return errReply
-	}
-	if setObj == nil {
-		return reply.MakeIntReply(0)
-	}
+	var result resp.Reply
 
-	// Remove all members
-	count := 0
-	for _, member := range members {
-		count += setObj.Remove(string(member))
-	}
-
-	// If any members were removed
-	if count > 0 {
-		// Check if set is now empty
-		if setObj.Len() == 0 {
-			db.Remove(key)
-		} else {
-			// Store updated set
-			db.PutEntity(key, &database.DataEntity{
-				Data: setObj,
-			})
+	// Use key-level locking to prevent concurrent modification of the same set
+	db.WithKeyLock(key, func() {
+		// Get set
+		setObj, errReply := getAsSet(db, key)
+		if errReply != nil {
+			result = errReply
+			return
+		}
+		if setObj == nil {
+			result = reply.MakeIntReply(0)
+			return
 		}
 
-		// Add to AOF
-		db.addAof(utils.ToCmdLineWithName("SREM", args...))
-	}
+		// Remove all members
+		count := 0
+		for _, member := range members {
+			count += setObj.Remove(string(member))
+		}
 
-	return reply.MakeIntReply(int64(count))
+		// If any members were removed
+		if count > 0 {
+			// Check if set is now empty
+			if setObj.Len() == 0 {
+				db.Remove(key)
+			} else {
+				// Store updated set
+				db.PutEntity(key, &database.DataEntity{
+					Data: setObj,
+				})
+			}
+
+			// Add to AOF
+			db.addAof(utils.ToCmdLineWithName("SREM", args...))
+		}
+
+		result = reply.MakeIntReply(int64(count))
+	})
+
+	return result
 }
 
 // execSPop implements SPOP key [count]

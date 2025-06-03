@@ -1,0 +1,817 @@
+import { Callout } from 'nextra/components'
+
+# Redis 并发安全
+
+在前面的章节中，我们实现了 Redis 的各种数据结构：字符串、哈希表、链表、集合和有序集合。这些数据结构在单线程环境下工作得很好，但是当多个客户端同时访问同一个数据时，就可能出现并发安全问题。
+
+在这一章中，我们将学习如何识别并发安全问题，设计解决方案，并实现一个高性能的并发安全机制。
+
+## 并发问题的背景
+
+### 为什么需要并发安全？
+
+虽然 Redis 本身是单线程的事件循环模型，但在我们的实现中，每个客户端连接都是由单独的 goroutine 处理的。这意味着**多个 goroutine 可能同时访问和修改同一个数据结构**，从而导致数据竞争和不一致性。
+
+考虑以下场景：
+
+1. **客户端 A** 执行 `SADD myset member1`
+2. **客户端 B** 同时执行 `SADD myset member2`  
+3. 两个操作都试图修改同一个集合 `myset`
+
+如果没有适当的同步机制，可能会出现：
+- 数据损坏
+- 内存泄漏
+- 程序崩溃
+- 不一致的状态
+
+### 典型的并发安全问题
+
+让我们通过一个具体的例子来理解问题：
+
+```go
+// 错误的实现 - 存在竞态条件
+func execSAdd(db *DB, args [][]byte) resp.Reply {
+    key := string(args[0])
+    members := args[1:]
+
+    // 步骤1：获取或创建集合对象
+    setObj, isNew, errReply := getOrInitSet(db, key)
+    if errReply != nil {
+        return errReply
+    }
+
+    // 步骤2：添加成员到集合 - 这里有问题！
+    count := 0
+    for _, member := range members {
+        count += setObj.Add(string(member))  // 多个goroutine可能同时调用这个方法
+    }
+
+    // 步骤3：保存回数据库
+    db.PutEntity(key, &database.DataEntity{Data: setObj})
+    
+    return reply.MakeIntReply(int64(count))
+}
+```
+
+**问题分析**：
+- 多个 goroutine 可能获取到**同一个 `setObj` 实例**
+- 然后它们**同时调用 `setObj.Add()` 方法**
+- 这导致对底层 `map[string]struct{}` 的并发读写
+- Go 运行时检测到这种情况会产生 `fatal error: concurrent map read and map write`
+
+## 识别并发安全问题
+
+### 运行时检测
+
+Go 提供了内置的竞态检测器，可以帮助我们发现并发问题：
+
+```bash
+# 使用竞态检测器运行测试
+go test -race -bench=BenchmarkSADD
+
+# 典型的竞态条件错误信息
+fatal error: concurrent map read and map write
+```
+
+### 基准测试中的表现
+
+我们可以通过基准测试来暴露并发问题：
+
+```go
+func BenchmarkSADD(b *testing.B) {
+    setupBenchmarkServer()
+
+    b.ResetTimer()
+    b.RunParallel(func(pb *testing.PB) {
+        conn := getConnection(b)
+        defer conn.Close()
+        
+        i := 0
+        for pb.Next() {
+            key := fmt.Sprintf("benchmark:set:%d", i%100) // 使用有限的key来增加冲突
+            member := fmt.Sprintf("member_%d", i)
+            // ... 发送SADD命令
+            i++
+        }
+    })
+}
+```
+
+当运行这个基准测试时，如果没有适当的同步机制，程序很可能会崩溃或卡住。
+
+### 问题的根本原因
+
+<Callout type="warning">
+**关键理解**：虽然数据库层面的 `SyncDict` 保护了对不同 key 的并发访问，但它**无法保护对同一个 value 对象内部的并发修改**。
+
+具体来说：
+1. `SyncDict` 确保了对同一 key 的 `Load` 和 `Store` 操作是原子的
+2. 但多个 goroutine 获取到同一个数据结构实例后，对该实例内部的并发操作仍然是不安全的
+3. 这就像多个人同时拿到了同一把钥匙，然后同时试图修改锁后面的内容
+</Callout>
+
+## 设计并发安全解决方案
+
+### 方案选择
+
+我们有几种解决并发问题的方案：
+
+1. **数据结构级别的锁**：在每个数据结构内部添加互斥锁
+2. **数据库级别的 key 锁**：为每个 key 提供细粒度的锁定
+3. **全局锁**：使用一个全局锁保护所有操作
+
+经过权衡，我们选择**数据库级别的 key 锁**，原因如下：
+
+**优点**：
+- 细粒度锁定：不同 key 之间不会相互阻塞
+- 性能优越：只有访问同一 key 的操作才会串行化
+- 实现简洁：无需修改现有数据结构
+- 易于维护：集中的锁管理逻辑
+
+**缺点**：
+- 需要额外的内存存储锁对象
+- 稍微增加了代码复杂度
+
+### 核心设计思想
+
+我们的解决方案基于以下核心思想：
+
+1. **Key 级别的细粒度锁定**：每个 key 都有自己独立的读写锁
+2. **自动锁管理**：使用 `sync.Map` 来动态创建和管理锁
+3. **便捷的锁定接口**：提供简单易用的锁定方法
+4. **读写锁分离**：支持并发读操作，只对写操作进行互斥
+
+## 实现 Key 级别锁管理器
+
+### KeyLockManager 结构
+
+首先，我们在 `database/db.go` 中定义锁管理器：
+
+```go filename="database/db.go"
+// KeyLockManager manages locks for individual keys
+type KeyLockManager struct {
+    locks sync.Map   // map[string]*sync.RWMutex
+    mutex sync.Mutex // protects the creation of new locks
+}
+
+// NewKeyLockManager creates a new KeyLockManager instance
+func NewKeyLockManager() *KeyLockManager {
+    return &KeyLockManager{}
+}
+```
+
+**设计说明**：
+- `locks sync.Map`：使用并发安全的 map 来存储每个 key 对应的锁
+- `mutex sync.Mutex`：保护新锁的创建过程（实际上 `sync.Map` 的 `LoadOrStore` 已经是原子的，这里主要作为设计文档）
+
+### 锁操作方法
+
+```go filename="database/db.go"
+// Lock acquires a write lock for the given key
+func (klm *KeyLockManager) Lock(key string) {
+    lockInterface, _ := klm.locks.LoadOrStore(key, &sync.RWMutex{})
+    lock := lockInterface.(*sync.RWMutex)
+    lock.Lock()
+}
+
+// Unlock releases a write lock for the given key
+func (klm *KeyLockManager) Unlock(key string) {
+    if lockInterface, ok := klm.locks.Load(key); ok {
+        lock := lockInterface.(*sync.RWMutex)
+        lock.Unlock()
+    }
+}
+
+// RLock acquires a read lock for the given key
+func (klm *KeyLockManager) RLock(key string) {
+    lockInterface, _ := klm.locks.LoadOrStore(key, &sync.RWMutex{})
+    lock := lockInterface.(*sync.RWMutex)
+    lock.RLock()
+}
+
+// RUnlock releases a read lock for the given key
+func (klm *KeyLockManager) RUnlock(key string) {
+    if lockInterface, ok := klm.locks.Load(key); ok {
+        lock := lockInterface.(*sync.RWMutex)
+        lock.RUnlock()
+    }
+}
+```
+
+**关键实现细节**：
+
+1. **`LoadOrStore` 的使用**：这是一个原子操作，如果 key 不存在就创建新锁，如果存在就返回现有锁
+2. **类型断言**：将 `interface{}` 转换为 `*sync.RWMutex`
+3. **读写锁分离**：支持多个并发读操作，但写操作是互斥的
+
+### 更新 DB 结构
+
+在 `DB` 结构体中添加锁管理器：
+
+```go filename="database/db.go"
+type DB struct {
+    index   int
+    data    dict.Dict
+    addAof  func(CmdLine)
+    lockMgr *KeyLockManager  // 新增：锁管理器
+}
+
+// MakeDB creates a new DB instance
+func MakeDB() *DB {
+    return &DB{
+        index: 0,
+        data:  dict.MakeSyncDict(),
+        addAof: func(line CmdLine) {
+            // No-op by default
+        },
+        lockMgr: NewKeyLockManager(), // 初始化锁管理器
+    }
+}
+```
+
+## 数据库层面的锁定方法
+
+为了使锁的使用更加便捷和安全，我们在 `DB` 结构体中添加一些高级的锁定方法：
+
+```go filename="database/db.go"
+// WithKeyLock executes the given function with a write lock on the specified key
+func (db *DB) WithKeyLock(key string, fn func()) {
+    db.lockMgr.Lock(key)
+    defer db.lockMgr.Unlock(key)
+    fn()
+}
+
+// WithKeyRLock executes the given function with a read lock on the specified key
+func (db *DB) WithKeyRLock(key string, fn func()) {
+    db.lockMgr.RLock(key)
+    defer db.lockMgr.RUnlock(key)
+    fn()
+}
+
+// WithKeyLockReturn executes the given function with a write lock and returns the result
+func (db *DB) WithKeyLockReturn(key string, fn func() interface{}) interface{} {
+    db.lockMgr.Lock(key)
+    defer db.lockMgr.Unlock(key)
+    return fn()
+}
+```
+
+**设计优势**：
+
+1. **自动管理**：使用 `defer` 确保锁一定会被释放
+2. **简化使用**：调用者只需要关注业务逻辑，不需要手动管理锁
+3. **类型安全**：避免忘记释放锁或释放错误的锁
+
+## 修复数据结构操作
+
+现在我们来修复各个数据结构的操作函数。
+
+### 修复 Set 操作
+
+以 `execSAdd` 为例：
+
+```go filename="database/set.go"
+// execSAdd implements SADD key member [member...]
+// Add one or more members to a set
+func execSAdd(db *DB, args [][]byte) resp.Reply {
+    key := string(args[0])
+    members := args[1:]
+
+    var result resp.Reply
+    
+    // 使用 key 级别锁定防止对同一个集合的并发修改
+    db.WithKeyLock(key, func() {
+        // 获取或创建集合
+        setObj, isNew, errReply := getOrInitSet(db, key)
+        if errReply != nil {
+            result = errReply
+            return
+        }
+
+        // 添加所有成员
+        count := 0
+        for _, member := range members {
+            count += setObj.Add(string(member))
+        }
+
+        // 如果是新集合或有成员被添加，则保存回数据库
+        if isNew || count > 0 {
+            db.PutEntity(key, &database.DataEntity{
+                Data: setObj,
+            })
+
+            // 添加到 AOF
+            db.addAof(utils.ToCmdLineWithName("SADD", args...))
+        }
+
+        result = reply.MakeIntReply(int64(count))
+    })
+
+    return result
+}
+```
+
+**修复要点**：
+1. 使用 `db.WithKeyLock()` 包装整个操作
+2. 将返回值通过闭包变量传递
+3. 确保所有对同一 key 的操作都在锁保护下进行
+
+类似地修复 `execSRem`：
+
+```go filename="database/set.go"
+func execSRem(db *DB, args [][]byte) resp.Reply {
+    key := string(args[0])
+    members := args[1:]
+
+    var result resp.Reply
+    
+    db.WithKeyLock(key, func() {
+        setObj, errReply := getAsSet(db, key)
+        if errReply != nil {
+            result = errReply
+            return
+        }
+        if setObj == nil {
+            result = reply.MakeIntReply(0)
+            return
+        }
+
+        count := 0
+        for _, member := range members {
+            count += setObj.Remove(string(member))
+        }
+
+        if count > 0 {
+            if setObj.Len() == 0 {
+                db.Remove(key)
+            } else {
+                db.PutEntity(key, &database.DataEntity{Data: setObj})
+            }
+            db.addAof(utils.ToCmdLineWithName("SREM", args...))
+        }
+
+        result = reply.MakeIntReply(int64(count))
+    })
+
+    return result
+}
+```
+
+### 修复 Hash 操作
+
+```go filename="database/hash.go"
+func execHSet(db *DB, args [][]byte) resp.Reply {
+    key := string(args[0])
+    field := string(args[1])
+    value := string(args[2])
+
+    var result resp.Reply
+
+    // 使用 key 级别锁定防止对同一个哈希表的并发修改
+    db.WithKeyLock(key, func() {
+        hashObj, _ := db.getOrCreateHash(key)
+        res := hashObj.Set(field, value)
+
+        db.addAof(utils.ToCmdLineWithName("HSET", args...))
+        result = reply.MakeIntReply(int64(res))
+    })
+
+    return result
+}
+
+func execHDel(db *DB, args [][]byte) resp.Reply {
+    key := string(args[0])
+
+    var result resp.Reply
+    
+    db.WithKeyLock(key, func() {
+        hash, exists := db.getAsHash(key)
+        if !exists {
+            result = reply.MakeIntReply(0)
+            return
+        }
+
+        deleted := 0
+        for _, field := range args[1:] {
+            deleted += hash.Delete(string(field))
+        }
+
+        if hash.Len() == 0 {
+            db.Remove(key)
+        }
+
+        if deleted > 0 {
+            db.addAof(utils.ToCmdLineWithName("hdel", args...))
+        }
+
+        result = reply.MakeIntReply(int64(deleted))
+    })
+
+    return result
+}
+```
+
+### 修复 List 操作
+
+```go filename="database/lists.go"
+func execLPush(db *DB, args [][]byte) resp.Reply {
+    key := string(args[0])
+    values := args[1:]
+
+    var result resp.Reply
+    
+    // 使用 key 级别锁定防止对同一个列表的并发修改
+    db.WithKeyLock(key, func() {
+        lst, exists := getAsList(db, key)
+        if lst == nil && exists {
+            result = reply.MakeWrongTypeErrReply()
+            return
+        }
+
+        for _, value := range values {
+            lst.PushFront(value)
+        }
+
+        db.PutEntity(key, &database.DataEntity{Data: lst})
+        db.addAof(utils.ToCmdLineWithName("LPUSH", args...))
+
+        result = reply.MakeIntReply(int64(lst.Len()))
+    })
+
+    return result
+}
+
+func execLPop(db *DB, args [][]byte) resp.Reply {
+    key := string(args[0])
+
+    var result resp.Reply
+    
+    db.WithKeyLock(key, func() {
+        lst, exists := getAsList(db, key)
+        if !exists {
+            result = reply.MakeNullBulkReply()
+            return
+        }
+        if lst == nil {
+            result = reply.MakeWrongTypeErrReply()
+            return
+        }
+
+        if lst.Len() == 0 {
+            result = reply.MakeNullBulkReply()
+            return
+        }
+
+        element := lst.Front()
+        lst.Remove(element)
+        value := element.Value.([]byte)
+
+        if lst.Len() == 0 {
+            db.Remove(key)
+        } else {
+            db.PutEntity(key, &database.DataEntity{Data: lst})
+        }
+
+        db.addAof(utils.ToCmdLineWithName("LPOP", args...))
+        result = reply.MakeBulkReply(value)
+    })
+
+    return result
+}
+```
+
+### 修复 ZSet 操作
+
+```go filename="database/zset.go"
+func execZAdd(db *DB, args [][]byte) resp.Reply {
+    if len(args) < 3 || len(args)%2 == 0 {
+        return reply.MakeStandardErrorReply("wrong number of arguments for 'zadd' command")
+    }
+
+    key := string(args[0])
+
+    var result resp.Reply
+    
+    // 使用 key 级别锁定防止对同一个有序集合的并发修改
+    db.WithKeyLock(key, func() {
+        zsetObj, exists := getAsZSet(db, key)
+        if exists && zsetObj == nil {
+            result = reply.MakeWrongTypeErrReply()
+            return
+        }
+
+        added := 0
+        for i := 1; i < len(args); i += 2 {
+            scoreStr := string(args[i])
+            member := string(args[i+1])
+
+            score, err := parseFloat(scoreStr)
+            if err != nil {
+                result = err
+                return
+            }
+
+            if zsetObj.Add(member, score) {
+                added++
+            }
+        }
+
+        db.PutEntity(key, &database.DataEntity{Data: zsetObj})
+        db.addAof(utils.ToCmdLineWithName("ZADD", args...))
+
+        result = reply.MakeIntReply(int64(added))
+    })
+
+    return result
+}
+```
+
+## 性能测试和验证
+
+### 基准测试设置
+
+我们通过基准测试来验证并发安全修复的效果：
+
+```go filename="test/stress/benchmark_test.go"
+// BenchmarkSADD tests SADD command performance
+func BenchmarkSADD(b *testing.B) {
+    setupBenchmarkServer()
+
+    b.ResetTimer()
+    b.RunParallel(func(pb *testing.PB) {
+        conn := getConnection(b)
+        defer conn.Close()
+        
+        i := 0
+        for pb.Next() {
+            key := fmt.Sprintf("benchmark:set:%d", i%100) // 使用有限的key来增加冲突
+            member := fmt.Sprintf("member_%d", i)
+            command := fmt.Sprintf("*3\r\n$4\r\nSADD\r\n$%d\r\n%s\r\n$%d\r\n%s\r\n",
+                len(key), key, len(member), member)
+
+            err := sendBenchmarkCommand(conn, command)
+            if err != nil {
+                b.Fatalf("SADD command failed: %v", err)
+            }
+            i++
+        }
+    })
+}
+```
+
+### 测试结果对比
+
+**修复前**：
+```bash
+$ go test -bench=BenchmarkSADD -benchmem -benchtime=1s
+fatal error: concurrent map read and map write
+```
+
+**修复后**：
+```bash
+$ go test -bench=BenchmarkSADD -benchmem -benchtime=1s
+goos: darwin
+goarch: arm64
+pkg: redigo/test/stress
+cpu: Apple M2
+BenchmarkSADD-8    144675    8392 ns/op    4628 B/op    27 allocs/op
+PASS
+ok      redigo/test/stress    2.574s
+```
+
+### 多种数据结构的性能验证
+
+我们测试了所有修复的数据结构：
+
+```bash
+# Hash 操作
+BenchmarkHSET-8     130687    9490 ns/op    5012 B/op    35 allocs/op
+
+# List 操作  
+BenchmarkLPUSH-8    132566    8518 ns/op    4823 B/op    33 allocs/op
+
+# ZSet 操作
+BenchmarkZADD-8     136731    8480 ns/op    4879 B/op    37 allocs/op
+
+# Set 操作
+BenchmarkSADD-8     144675    8392 ns/op    4628 B/op    27 allocs/op
+```
+
+**性能分析**：
+- 所有操作的 QPS 都在 10 万级别以上
+- 锁的粒度是 key 级别，不同 key 之间不会相互阻塞
+- 只有对同一个 key 的并发写操作才会串行化，这是符合预期的
+
+### 竞态检测验证
+
+使用 Go 的竞态检测器确认没有竞态条件：
+
+```bash
+$ go test -race -bench=BenchmarkSADD -benchtime=1s
+# 没有竞态条件报告，测试正常完成
+```
+
+## 读操作的优化考虑
+
+对于只读操作，我们可以考虑使用读锁来提高并发性能：
+
+```go filename="database/set.go"
+// execSMembers implements SMEMBERS key
+// Get all the members in a set
+func execSMembers(db *DB, args [][]byte) resp.Reply {
+    key := string(args[0])
+
+    var result resp.Reply
+    
+    // 使用读锁，允许多个并发读操作
+    db.WithKeyRLock(key, func() {
+        setObj, errReply := getAsSet(db, key)
+        if errReply != nil {
+            result = errReply
+            return
+        }
+        if setObj == nil {
+            result = reply.MakeMultiBulkReply([][]byte{})
+            return
+        }
+
+        members := setObj.Members()
+        resultBytes := make([][]byte, len(members))
+        for i, member := range members {
+            resultBytes[i] = []byte(member)
+        }
+
+        result = reply.MakeMultiBulkReply(resultBytes)
+    })
+
+    return result
+}
+```
+
+<Callout type="info">
+**读写锁的优势**：
+- 读操作之间不会相互阻塞
+- 只有写操作会阻塞其他所有操作
+- 在读多写少的场景下能显著提升性能
+</Callout>
+
+## 最佳实践和建议
+
+### 1. 锁的粒度选择
+
+- ✅ **Key 级别锁定**：我们选择的方案，在并发性和实现复杂度之间达到了很好的平衡
+- ❌ **全局锁**：简单但性能差，所有操作都会串行化
+- ❌ **数据结构级别锁**：需要修改所有现有数据结构，实现复杂
+
+### 2. 锁的类型选择
+
+- **读写锁 (`sync.RWMutex`)**：适合读多写少的场景
+- **互斥锁 (`sync.Mutex`)**：简单，但读操作也会相互阻塞
+
+### 3. 锁管理的最佳实践
+
+**使用闭包模式**：
+```go
+// ✅ 推荐：自动管理锁的生命周期
+db.WithKeyLock(key, func() {
+    // 业务逻辑
+})
+
+// ❌ 不推荐：手动管理锁，容易出错
+db.lockMgr.Lock(key)
+// 业务逻辑
+db.lockMgr.Unlock(key) // 可能忘记或在异常情况下跳过
+```
+
+**错误处理**：
+```go
+db.WithKeyLock(key, func() {
+    setObj, errReply := getAsSet(db, key)
+    if errReply != nil {
+        result = errReply
+        return // 自动释放锁
+    }
+    // 继续处理...
+})
+```
+
+### 4. 性能优化建议
+
+1. **避免在锁内进行耗时操作**：
+   ```go
+   // ❌ 错误：在锁内进行网络 I/O
+   db.WithKeyLock(key, func() {
+       // ... 数据操作
+       sendNotificationToRemoteServer() // 耗时操作
+   })
+   
+   // ✅ 正确：先完成数据操作，再进行其他操作
+   var notificationData interface{}
+   db.WithKeyLock(key, func() {
+       // ... 数据操作
+       notificationData = prepareNotification()
+   })
+   sendNotificationToRemoteServer(notificationData)
+   ```
+
+2. **合理使用读锁**：
+   ```go
+   // 读操作使用读锁
+   db.WithKeyRLock(key, func() {
+       value := getData(key)
+       result = value
+   })
+   
+   // 写操作使用写锁
+   db.WithKeyLock(key, func() {
+       setData(key, newValue)
+   })
+   ```
+
+3. **减少锁的持有时间**：
+   ```go
+   // ✅ 推荐：最小化锁的范围
+   var data SomeData
+   db.WithKeyLock(key, func() {
+       data = getDataFromDB(key)
+   })
+   processedData := expensiveProcessing(data) // 在锁外进行
+   db.WithKeyLock(key, func() {
+       saveDataToDB(key, processedData)
+   })
+   ```
+
+## 扩展和未来改进
+
+### 1. 锁超时机制
+
+对于可能的死锁情况，可以考虑添加超时机制：
+
+```go
+func (db *DB) WithKeyLockTimeout(key string, timeout time.Duration, fn func()) error {
+    ctx, cancel := context.WithTimeout(context.Background(), timeout)
+    defer cancel()
+    
+    // 实现带超时的锁获取
+    // 这需要更复杂的锁实现
+}
+```
+
+### 2. 锁竞争监控
+
+添加锁竞争的监控和统计：
+
+```go
+type KeyLockManager struct {
+    locks sync.Map
+    stats struct {
+        lockContention map[string]int64
+        avgWaitTime    map[string]time.Duration
+    }
+}
+```
+
+### 3. 分布式锁
+
+在集群环境中，可能需要分布式锁：
+
+```go
+type DistributedLockManager interface {
+    Lock(key string) (DistributedLock, error)
+    RLock(key string) (DistributedLock, error)
+}
+```
+
+## 总结
+
+在本章中，我们成功解决了 Redis 实现中的并发安全问题：
+
+### 关键成果
+
+1. **识别问题**：发现了 Hash、List、Set、ZSet 等数据结构的并发安全问题
+2. **设计方案**：选择了 key 级别锁定的解决方案
+3. **实现机制**：创建了 `KeyLockManager` 和便捷的锁定接口
+4. **验证效果**：通过基准测试确认修复成功且性能良好
+
+### 设计原则
+
+- **细粒度锁定**：只对同一 key 的操作进行串行化
+- **自动管理**：使用闭包和 `defer` 确保锁的正确释放
+- **读写分离**：支持并发读操作以提高性能
+- **简化使用**：提供易用的 API 减少错误
+
+### 最重要的收获
+
+<Callout type="warning">
+**核心理解**：虽然数据库层面的 `SyncDict` 保护了键值对的存取，但**无法保护同一个 value 对象内部的并发修改**。这是一个很容易被忽视但非常关键的并发安全问题。
+
+正确的解决方案是在**业务逻辑层面**添加适当的同步机制，确保对数据结构的操作是原子性的。
+</Callout>
+
+通过本章的学习，我们不仅解决了具体的并发问题，更重要的是掌握了：
+- 如何识别和分析并发安全问题
+- 如何设计高效的锁机制
+- 如何在性能和安全性之间找到平衡
+- 如何编写并发安全的代码
+
+这些技能对于构建高质量的并发系统至关重要。 

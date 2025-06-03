@@ -9,12 +9,55 @@ import (
 	"redigo/interface/resp"
 	"redigo/resp/reply"
 	"strings"
+	"sync"
 )
 
+// KeyLockManager manages locks for individual keys
+type KeyLockManager struct {
+	locks sync.Map // map[string]*sync.RWMutex
+	// mutex sync.Mutex // protects the creation of new locks
+}
+
+// NewKeyLockManager creates a new KeyLockManager instance
+func NewKeyLockManager() *KeyLockManager {
+	return &KeyLockManager{}
+}
+
+// Lock acquires a write lock for the given key
+func (klm *KeyLockManager) Lock(key string) {
+	lockInterface, _ := klm.locks.LoadOrStore(key, &sync.RWMutex{})
+	lock := lockInterface.(*sync.RWMutex)
+	lock.Lock()
+}
+
+// Unlock releases a write lock for the given key
+func (klm *KeyLockManager) Unlock(key string) {
+	if lockInterface, ok := klm.locks.Load(key); ok {
+		lock := lockInterface.(*sync.RWMutex)
+		lock.Unlock()
+	}
+}
+
+// RLock acquires a read lock for the given key
+func (klm *KeyLockManager) RLock(key string) {
+	lockInterface, _ := klm.locks.LoadOrStore(key, &sync.RWMutex{})
+	lock := lockInterface.(*sync.RWMutex)
+	lock.RLock()
+}
+
+// RUnlock releases a read lock for the given key
+func (klm *KeyLockManager) RUnlock(key string) {
+	if lockInterface, ok := klm.locks.Load(key); ok {
+		lock := lockInterface.(*sync.RWMutex)
+		lock.RUnlock()
+	}
+}
+
 type DB struct {
-	index  int
-	data   dict.Dict
-	addAof func(CmdLine)
+	index   int
+	data    dict.Dict
+	addAof  func(CmdLine)
+	lockMgr *KeyLockManager
 }
 
 // MakeDB creates a new DB instance
@@ -26,6 +69,7 @@ func MakeDB() *DB {
 			// No-op by default,
 			// can be overridden by the database instance
 		},
+		lockMgr: NewKeyLockManager(),
 	}
 }
 
@@ -191,4 +235,25 @@ func (db *DB) Removes(keys ...string) int {
 // Flush clears the database by removing all DataEntity objects
 func (db *DB) Flush() {
 	db.data.Clear()
+}
+
+// WithKeyLock executes the given function with a write lock on the specified key
+func (db *DB) WithKeyLock(key string, fn func()) {
+	db.lockMgr.Lock(key)
+	defer db.lockMgr.Unlock(key)
+	fn()
+}
+
+// WithKeyRLock executes the given function with a read lock on the specified key
+func (db *DB) WithKeyRLock(key string, fn func()) {
+	db.lockMgr.RLock(key)
+	defer db.lockMgr.RUnlock(key)
+	fn()
+}
+
+// WithKeyLockReturn executes the given function with a write lock on the specified key and returns the result
+func (db *DB) WithKeyLockReturn(key string, fn func() interface{}) interface{} {
+	db.lockMgr.Lock(key)
+	defer db.lockMgr.Unlock(key)
+	return fn()
 }

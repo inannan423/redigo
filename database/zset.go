@@ -26,36 +26,45 @@ func execZAdd(db *DB, args [][]byte) resp.Reply {
 
 	key := string(args[0])
 
-	// Get or create ZSet
-	zsetObj, exists := getAsZSet(db, key)
-	if exists && zsetObj == nil {
-		return reply.MakeWrongTypeErrReply()
-	}
+	var result resp.Reply
 
-	added := 0
-	for i := 1; i < len(args); i += 2 {
-		scoreStr := string(args[i])
-		member := string(args[i+1])
-
-		// Parse score
-		score, err := parseFloat(scoreStr)
-		if err != nil {
-			return err
+	// Use key-level locking to prevent concurrent modification of the same zset
+	db.WithKeyLock(key, func() {
+		// Get or create ZSet
+		zsetObj, exists := getAsZSet(db, key)
+		if exists && zsetObj == nil {
+			result = reply.MakeWrongTypeErrReply()
+			return
 		}
 
-		// Add member to ZSet
-		if zsetObj.Add(member, score) {
-			added++
+		added := 0
+		for i := 1; i < len(args); i += 2 {
+			scoreStr := string(args[i])
+			member := string(args[i+1])
+
+			// Parse score
+			score, err := parseFloat(scoreStr)
+			if err != nil {
+				result = err
+				return
+			}
+
+			// Add member to ZSet
+			if zsetObj.Add(member, score) {
+				added++
+			}
 		}
-	}
 
-	// Store ZSet in database
-	db.PutEntity(key, &database.DataEntity{Data: zsetObj})
+		// Store ZSet in database
+		db.PutEntity(key, &database.DataEntity{Data: zsetObj})
 
-	// Add AOF record
-	db.addAof(utils.ToCmdLineWithName("ZADD", args...))
+		// Add AOF record
+		db.addAof(utils.ToCmdLineWithName("ZADD", args...))
 
-	return reply.MakeIntReply(int64(added))
+		result = reply.MakeIntReply(int64(added))
+	})
+
+	return result
 }
 
 // execZScore implements the ZSCORE command
@@ -171,33 +180,42 @@ func execZRem(db *DB, args [][]byte) resp.Reply {
 
 	key := string(args[0])
 
-	// Get ZSet
-	zsetObj, exists := getAsZSet(db, key)
-	if !exists {
-		return reply.MakeIntReply(0)
-	}
-	if zsetObj == nil {
-		return reply.MakeWrongTypeErrReply()
-	}
+	var result resp.Reply
 
-	// Remove members
-	removed := 0
-	for i := 1; i < len(args); i++ {
-		member := string(args[i])
-		if zsetObj.Remove(member) {
-			removed++
+	// Use key-level locking to prevent concurrent modification of the same zset
+	db.WithKeyLock(key, func() {
+		// Get ZSet
+		zsetObj, exists := getAsZSet(db, key)
+		if !exists {
+			result = reply.MakeIntReply(0)
+			return
 		}
-	}
+		if zsetObj == nil {
+			result = reply.MakeWrongTypeErrReply()
+			return
+		}
 
-	// Update database if we removed anything
-	if removed > 0 {
-		db.PutEntity(key, &database.DataEntity{Data: zsetObj})
+		// Remove members
+		removed := 0
+		for i := 1; i < len(args); i++ {
+			member := string(args[i])
+			if zsetObj.Remove(member) {
+				removed++
+			}
+		}
 
-		// Add AOF record
-		db.addAof(utils.ToCmdLineWithName("ZREM", args...))
-	}
+		// Update database if we removed anything
+		if removed > 0 {
+			db.PutEntity(key, &database.DataEntity{Data: zsetObj})
 
-	return reply.MakeIntReply(int64(removed))
+			// Add AOF record
+			db.addAof(utils.ToCmdLineWithName("ZREM", args...))
+		}
+
+		result = reply.MakeIntReply(int64(removed))
+	})
+
+	return result
 }
 
 // execZCount implements the ZCOUNT command

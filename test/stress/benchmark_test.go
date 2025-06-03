@@ -236,8 +236,8 @@ func BenchmarkLPUSH(b *testing.B) {
 
 		i := 0
 		for pb.Next() {
-			key := fmt.Sprintf("benchmark:list:%d", i%100) // Use limited keys to build lists
-			value := fmt.Sprintf("item_%d", i)
+			key := fmt.Sprintf("benchmark:list:%d", i%100)
+			value := fmt.Sprintf("value_%d", i)
 			command := fmt.Sprintf("*3\r\n$5\r\nLPUSH\r\n$%d\r\n%s\r\n$%d\r\n%s\r\n",
 				len(key), key, len(value), value)
 
@@ -356,6 +356,32 @@ func BenchmarkConcurrentConnections(b *testing.B) {
 			err := sendBenchmarkCommand(conn, command)
 			if err != nil {
 				b.Fatalf("SET command failed: %v", err)
+			}
+			i++
+		}
+	})
+}
+
+// BenchmarkZADD tests ZADD command performance
+func BenchmarkZADD(b *testing.B) {
+	setupBenchmarkServer()
+
+	b.ResetTimer()
+	b.RunParallel(func(pb *testing.PB) {
+		conn := getConnection(b)
+		defer conn.Close()
+
+		i := 0
+		for pb.Next() {
+			key := fmt.Sprintf("benchmark:zset:%d", i%100)
+			member := fmt.Sprintf("member_%d", i)
+			score := fmt.Sprintf("%.2f", float64(i%100))
+			command := fmt.Sprintf("*4\r\n$4\r\nZADD\r\n$%d\r\n%s\r\n$%d\r\n%s\r\n$%d\r\n%s\r\n",
+				len(key), key, len(score), score, len(member), member)
+
+			err := sendBenchmarkCommand(conn, command)
+			if err != nil {
+				b.Fatalf("ZADD command failed: %v", err)
 			}
 			i++
 		}

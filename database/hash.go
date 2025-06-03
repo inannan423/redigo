@@ -12,12 +12,19 @@ func execHSet(db *DB, args [][]byte) resp.Reply {
 	field := string(args[1])
 	value := string(args[2])
 
-	hashObj, _ := db.getOrCreateHash(key)
-	result := hashObj.Set(field, value)
+	var result resp.Reply
 
-	db.addAof(utils.ToCmdLineWithName("HSET", args...))
+	// Use key-level locking to prevent concurrent modification of the same hash
+	db.WithKeyLock(key, func() {
+		hashObj, _ := db.getOrCreateHash(key)
+		res := hashObj.Set(field, value)
 
-	return reply.MakeIntReply(int64(result))
+		db.addAof(utils.ToCmdLineWithName("HSET", args...))
+
+		result = reply.MakeIntReply(int64(res))
+	})
+
+	return result
 }
 
 // HGet gets the value of a field in hash
@@ -59,25 +66,33 @@ func execHExists(db *DB, args [][]byte) resp.Reply {
 func execHDel(db *DB, args [][]byte) resp.Reply {
 	key := string(args[0])
 
-	hash, exists := db.getAsHash(key)
-	if !exists {
-		return reply.MakeIntReply(0)
-	}
+	var result resp.Reply
 
-	deleted := 0
-	for _, field := range args[1:] {
-		deleted += hash.Delete(string(field))
-	}
+	// Use key-level locking to prevent concurrent modification of the same hash
+	db.WithKeyLock(key, func() {
+		hash, exists := db.getAsHash(key)
+		if !exists {
+			result = reply.MakeIntReply(0)
+			return
+		}
 
-	if hash.Len() == 0 {
-		db.Remove(key)
-	}
+		deleted := 0
+		for _, field := range args[1:] {
+			deleted += hash.Delete(string(field))
+		}
 
-	if deleted > 0 {
-		db.addAof(utils.ToCmdLineWithName("hdel", args...))
-	}
+		if hash.Len() == 0 {
+			db.Remove(key)
+		}
 
-	return reply.MakeIntReply(int64(deleted))
+		if deleted > 0 {
+			db.addAof(utils.ToCmdLineWithName("hdel", args...))
+		}
+
+		result = reply.MakeIntReply(int64(deleted))
+	})
+
+	return result
 }
 
 // HLen returns number of fields in hash
@@ -182,17 +197,24 @@ func execHMSet(db *DB, args [][]byte) resp.Reply {
 		return reply.MakeStandardErrorReply("ERR wrong number of arguments for 'hmset' command")
 	}
 
-	hash, _ := db.getOrCreateHash(key)
+	var result resp.Reply
 
-	for i := 1; i < len(args); i += 2 {
-		field := string(args[i])
-		value := string(args[i+1])
-		hash.Set(field, value)
-	}
+	// Use key-level locking to prevent concurrent modification of the same hash
+	db.WithKeyLock(key, func() {
+		hash, _ := db.getOrCreateHash(key)
 
-	db.addAof(utils.ToCmdLineWithName("hmset", args...))
+		for i := 1; i < len(args); i += 2 {
+			field := string(args[i])
+			value := string(args[i+1])
+			hash.Set(field, value)
+		}
 
-	return reply.MakeOKReply()
+		db.addAof(utils.ToCmdLineWithName("hmset", args...))
+
+		result = reply.MakeOKReply()
+	})
+
+	return result
 }
 
 // HEncoding returns the encoding of the hash.

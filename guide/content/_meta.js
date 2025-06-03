@@ -13,4 +13,6 @@ export default {
     "hash": "哈希表",
     "set": "集合",
     "zset": "有序集合",
+    "stress-testing": "压力测试与性能评估",
+    "concurrency": "并发安全",
 }
