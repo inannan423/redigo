@@ -115,7 +115,6 @@ func execSPop(db *DB, args [][]byte) resp.Reply {
 // KeyLockManager manages locks for individual keys
 type KeyLockManager struct {
     locks sync.Map   // map[string]*sync.RWMutex
-    mutex sync.Mutex // protects the creation of new locks
 }
 
 // NewKeyLockManager creates a new KeyLockManager instance
@@ -126,7 +125,6 @@ func NewKeyLockManager() *KeyLockManager {
 
 **设计说明**：
 - `locks sync.Map`：使用并发安全的 map 来存储每个 key 对应的锁
-- `mutex sync.Mutex`：保护新锁的创建过程（实际上 `sync.Map` 的 `LoadOrStore` 已经是原子的）
 
 ### 锁操作方法
 
