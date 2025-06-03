@@ -39,13 +39,12 @@ npm run dev
 7. **[有序集合](https://redigo.vercel.app/zset)**
 
 #### 🚀 高级特性
-8. **[压力测试与性能评估](https://redigo.vercel.app/stress-testing)**
 
-9. **[并发安全](https://redigo.vercel.app/concurrency)**
+8. **[数据持久化](https://redigo.vercel.app/persistence)**
 
-10. **[数据持久化](https://redigo.vercel.app/persistence)**
+9. **[集群模式](https://redigo.vercel.app/cluster)**
 
-11. **[集群模式](https://redigo.vercel.app/cluster)**
+10. **[并发安全](https://redigo.vercel.app/concurrency)**
 
 ## ✨ 核心特性
 

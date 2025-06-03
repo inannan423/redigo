@@ -2,8 +2,6 @@ import { Callout } from 'nextra/components'
 
 # Redis 并发安全实现
 
-> 本文进度对应的代码仓库：[Redis 并发安全](https://github.com/inannan423/redigo/tree/concurrency)
-
 在前面的章节中，我们实现了 Redis 的各种数据结构：字符串、哈希表、链表、集合和有序集合。这些数据结构在单线程环境下工作得很好，但是当多个客户端同时访问同一个数据时，就可能出现并发安全问题。
 
 在这一章中，我们将学习如何识别并发安全问题，设计解决方案，并实现一个高性能的并发安全机制。
