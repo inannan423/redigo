@@ -27,7 +27,7 @@ func execHSet(db *DB, args [][]byte) resp.Reply {
 	return result
 }
 
-// HGet gets the value of a field in hash
+// HGet returns field value in hash
 func execHGet(db *DB, args [][]byte) resp.Reply {
 	key := string(args[0])
 	field := string(args[1])
@@ -111,81 +111,113 @@ func execHLen(db *DB, args [][]byte) resp.Reply {
 func execHGetAll(db *DB, args [][]byte) resp.Reply {
 	key := string(args[0])
 
-	hash, exists := db.getAsHash(key)
-	if !exists {
-		return reply.MakeEmptyMultiBulkReply()
-	}
+	var result resp.Reply
 
-	allMap := hash.GetAll()
-	result := make([][]byte, 0, len(allMap)*2)
-	for field, value := range allMap {
-		result = append(result, []byte(field))
-		result = append(result, []byte(value))
-	}
+	// Use read lock to allow concurrent reads while preventing concurrent writes
+	db.WithKeyRLock(key, func() {
+		hash, exists := db.getAsHash(key)
+		if !exists {
+			result = reply.MakeEmptyMultiBulkReply()
+			return
+		}
 
-	return reply.MakeMultiBulkReply(result)
+		allMap := hash.GetAll()
+		resultBytes := make([][]byte, 0, len(allMap)*2)
+		for field, value := range allMap {
+			resultBytes = append(resultBytes, []byte(field))
+			resultBytes = append(resultBytes, []byte(value))
+		}
+
+		result = reply.MakeMultiBulkReply(resultBytes)
+	})
+
+	return result
 }
 
 // HKeys returns all fields in hash
 func execHKeys(db *DB, args [][]byte) resp.Reply {
 	key := string(args[0])
 
-	hash, exists := db.getAsHash(key)
-	if !exists {
-		return reply.MakeEmptyMultiBulkReply()
-	}
+	var result resp.Reply
 
-	fields := hash.Fields()
-	result := make([][]byte, len(fields))
-	for i, field := range fields {
-		result[i] = []byte(field)
-	}
+	// Use read lock to allow concurrent reads while preventing concurrent writes
+	db.WithKeyRLock(key, func() {
+		hash, exists := db.getAsHash(key)
+		if !exists {
+			result = reply.MakeEmptyMultiBulkReply()
+			return
+		}
 
-	return reply.MakeMultiBulkReply(result)
+		fields := hash.Fields()
+		resultBytes := make([][]byte, len(fields))
+		for i, field := range fields {
+			resultBytes[i] = []byte(field)
+		}
+
+		result = reply.MakeMultiBulkReply(resultBytes)
+	})
+
+	return result
 }
 
 // HVals returns all values in hash
 func execHVals(db *DB, args [][]byte) resp.Reply {
 	key := string(args[0])
 
-	hash, exists := db.getAsHash(key)
-	if !exists {
-		return reply.MakeEmptyMultiBulkReply()
-	}
+	var result resp.Reply
 
-	values := hash.Values()
-	result := make([][]byte, len(values))
-	for i, value := range values {
-		result[i] = []byte(value)
-	}
+	// Use read lock to allow concurrent reads while preventing concurrent writes
+	db.WithKeyRLock(key, func() {
+		hash, exists := db.getAsHash(key)
+		if !exists {
+			result = reply.MakeEmptyMultiBulkReply()
+			return
+		}
 
-	return reply.MakeMultiBulkReply(result)
+		values := hash.Values()
+		resultBytes := make([][]byte, len(values))
+		for i, value := range values {
+			resultBytes[i] = []byte(value)
+		}
+
+		result = reply.MakeMultiBulkReply(resultBytes)
+	})
+
+	return result
 }
 
 // HMGet returns values for multiple fields in hash
 func execHMGet(db *DB, args [][]byte) resp.Reply {
 	key := string(args[0])
 
-	hash, exists := db.getAsHash(key)
-	if !exists {
+	var result resp.Reply
+
+	// Use read lock to allow concurrent reads while preventing concurrent writes
+	db.WithKeyRLock(key, func() {
+		hash, exists := db.getAsHash(key)
+		if !exists {
+			results := make([][]byte, len(args)-1)
+			for i := range results {
+				results[i] = nil
+			}
+			result = reply.MakeMultiBulkReply(results)
+			return
+		}
+
 		results := make([][]byte, len(args)-1)
-		for i := range results {
-			results[i] = nil
+		for i, field := range args[1:] {
+			value, exists := hash.Get(string(field))
+			if exists {
+				results[i] = []byte(value)
+			} else {
+				results[i] = nil
+			}
 		}
-		return reply.MakeMultiBulkReply(results)
-	}
 
-	results := make([][]byte, len(args)-1)
-	for i, field := range args[1:] {
-		value, exists := hash.Get(string(field))
-		if exists {
-			results[i] = []byte(value)
-		} else {
-			results[i] = nil
-		}
-	}
+		result = reply.MakeMultiBulkReply(results)
+	})
 
-	return reply.MakeMultiBulkReply(results)
+	return result
 }
 
 // HMSet sets multiple fields in hash
@@ -238,18 +270,26 @@ func execHSetNX(db *DB, args [][]byte) resp.Reply {
 	field := string(args[1])
 	value := string(args[2])
 
-	hash, _ := db.getOrCreateHash(key)
+	var result resp.Reply
 
-	_, exists := hash.Get(field)
-	if exists {
-		return reply.MakeIntReply(0)
-	}
+	// Use key-level locking to prevent concurrent modification of the same hash
+	db.WithKeyLock(key, func() {
+		hash, _ := db.getOrCreateHash(key)
 
-	hash.Set(field, value)
+		_, exists := hash.Get(field)
+		if exists {
+			result = reply.MakeIntReply(0)
+			return
+		}
 
-	db.addAof(utils.ToCmdLineWithName("HSETNX", args...))
+		hash.Set(field, value)
 
-	return reply.MakeIntReply(1)
+		db.addAof(utils.ToCmdLineWithName("HSETNX", args...))
+
+		result = reply.MakeIntReply(1)
+	})
+
+	return result
 }
 
 func init() {

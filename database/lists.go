@@ -199,46 +199,56 @@ func execLRange(db *DB, args [][]byte) resp.Reply {
 		return reply.MakeStandardErrorReply("value is not an integer or out of range")
 	}
 
-	// Get list
-	lst, exists := getAsList(db, key)
-	if !exists {
-		return reply.MakeEmptyMultiBulkReply()
-	}
-	if lst == nil { // Key exists but is not a list
-		return reply.MakeWrongTypeErrReply()
-	}
+	var result resp.Reply
 
-	// Convert negative indices
-	size := int64(lst.Len())
-	if start < 0 {
-		start = size + start
-	}
-	if stop < 0 {
-		stop = size + stop
-	}
-	if start < 0 {
-		start = 0
-	}
-	if stop >= size {
-		stop = size - 1
-	}
-	if start > stop {
-		return reply.MakeEmptyMultiBulkReply()
-	}
-
-	// Collect elements
-	elements := make([][]byte, 0, stop-start+1)
-	index := int64(0)
-	for e := lst.Front(); e != nil; e = e.Next() {
-		if index >= start && index <= stop {
-			elements = append(elements, e.Value.([]byte))
-		} else if index > stop {
-			break
+	// Use read lock to allow concurrent reads while preventing concurrent writes
+	db.WithKeyRLock(key, func() {
+		// Get list
+		lst, exists := getAsList(db, key)
+		if !exists {
+			result = reply.MakeEmptyMultiBulkReply()
+			return
 		}
-		index++
-	}
+		if lst == nil { // Key exists but is not a list
+			result = reply.MakeWrongTypeErrReply()
+			return
+		}
 
-	return reply.MakeMultiBulkReply(elements)
+		// Convert negative indices
+		size := int64(lst.Len())
+		if start < 0 {
+			start = size + start
+		}
+		if stop < 0 {
+			stop = size + stop
+		}
+		if start < 0 {
+			start = 0
+		}
+		if stop >= size {
+			stop = size - 1
+		}
+		if start > stop {
+			result = reply.MakeEmptyMultiBulkReply()
+			return
+		}
+
+		// Collect elements
+		elements := make([][]byte, 0, stop-start+1)
+		index := int64(0)
+		for e := lst.Front(); e != nil; e = e.Next() {
+			if index >= start && index <= stop {
+				elements = append(elements, e.Value.([]byte))
+			} else if index > stop {
+				break
+			}
+			index++
+		}
+
+		result = reply.MakeMultiBulkReply(elements)
+	})
+
+	return result
 }
 
 // execLLen implements the LLEN command: Returns the length of the list stored at key
@@ -246,7 +256,6 @@ func execLRange(db *DB, args [][]byte) resp.Reply {
 func execLLen(db *DB, args [][]byte) resp.Reply {
 	key := string(args[0])
 
-	// Get list
 	lst, exists := getAsList(db, key)
 	if !exists {
 		return reply.MakeIntReply(0)
@@ -267,40 +276,50 @@ func execLIndex(db *DB, args [][]byte) resp.Reply {
 		return reply.MakeStandardErrorReply("value is not an integer or out of range")
 	}
 
-	// Get list
-	lst, exists := getAsList(db, key)
-	if !exists {
-		return reply.MakeNullBulkReply()
-	}
-	if lst == nil { // Key exists but is not a list
-		return reply.MakeWrongTypeErrReply()
-	}
+	var result resp.Reply
 
-	size := int64(lst.Len())
-	if index < 0 {
-		index = size + index
-	}
-	if index < 0 || index >= size {
-		return reply.MakeNullBulkReply()
-	}
-
-	// Find the element at the specified index
-	var element *list.Element
-	if index < size/2 {
-		// If index is in the first half, iterate from front
-		element = lst.Front()
-		for i := int64(0); i < index; i++ {
-			element = element.Next()
+	// Use read lock to allow concurrent reads while preventing concurrent writes
+	db.WithKeyRLock(key, func() {
+		// Get list
+		lst, exists := getAsList(db, key)
+		if !exists {
+			result = reply.MakeNullBulkReply()
+			return
 		}
-	} else {
-		// If index is in the second half, iterate from back
-		element = lst.Back()
-		for i := size - 1; i > index; i-- {
-			element = element.Prev()
+		if lst == nil { // Key exists but is not a list
+			result = reply.MakeWrongTypeErrReply()
+			return
 		}
-	}
 
-	return reply.MakeBulkReply(element.Value.([]byte))
+		size := int64(lst.Len())
+		if index < 0 {
+			index = size + index
+		}
+		if index < 0 || index >= size {
+			result = reply.MakeNullBulkReply()
+			return
+		}
+
+		// Find the element at the specified index
+		var element *list.Element
+		if index < size/2 {
+			// If index is in the first half, iterate from front
+			element = lst.Front()
+			for i := int64(0); i < index; i++ {
+				element = element.Next()
+			}
+		} else {
+			// If index is in the second half, iterate from back
+			element = lst.Back()
+			for i := size - 1; i > index; i-- {
+				element = element.Prev()
+			}
+		}
+
+		result = reply.MakeBulkReply(element.Value.([]byte))
+	})
+
+	return result
 }
 
 // execLSet implements the LSET command: Sets the list element at index to value
@@ -313,41 +332,51 @@ func execLSet(db *DB, args [][]byte) resp.Reply {
 	}
 	value := args[2]
 
-	// Get list
-	lst, exists := getAsList(db, key)
-	if !exists {
-		return reply.MakeStandardErrorReply("no such key")
-	}
-	if lst == nil { // Key exists but is not a list
-		return reply.MakeWrongTypeErrReply()
-	}
+	var result resp.Reply
 
-	size := int64(lst.Len())
-	if index < 0 {
-		index = size + index
-	}
-	if index < 0 || index >= size {
-		return reply.MakeStandardErrorReply("index out of range")
-	}
-
-	// Find and update the element at the specified index
-	var element *list.Element
-	if index < size/2 {
-		element = lst.Front()
-		for i := int64(0); i < index; i++ {
-			element = element.Next()
+	// Use key-level locking to prevent concurrent modification of the same list
+	db.WithKeyLock(key, func() {
+		// Get list
+		lst, exists := getAsList(db, key)
+		if !exists {
+			result = reply.MakeStandardErrorReply("no such key")
+			return
 		}
-	} else {
-		element = lst.Back()
-		for i := size - 1; i > index; i-- {
-			element = element.Prev()
+		if lst == nil { // Key exists but is not a list
+			result = reply.MakeWrongTypeErrReply()
+			return
 		}
-	}
-	element.Value = value
 
-	db.PutEntity(key, &database.DataEntity{Data: lst})
-	db.addAof(utils.ToCmdLineWithName("LSET", args...))
-	return reply.MakeOKReply()
+		size := int64(lst.Len())
+		if index < 0 {
+			index = size + index
+		}
+		if index < 0 || index >= size {
+			result = reply.MakeStandardErrorReply("index out of range")
+			return
+		}
+
+		// Find and update the element at the specified index
+		var element *list.Element
+		if index < size/2 {
+			element = lst.Front()
+			for i := int64(0); i < index; i++ {
+				element = element.Next()
+			}
+		} else {
+			element = lst.Back()
+			for i := size - 1; i > index; i-- {
+				element = element.Prev()
+			}
+		}
+		element.Value = value
+
+		db.PutEntity(key, &database.DataEntity{Data: lst})
+		db.addAof(utils.ToCmdLineWithName("LSET", args...))
+		result = reply.MakeOKReply()
+	})
+
+	return result
 }
 
 func init() {

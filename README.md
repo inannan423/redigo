@@ -186,142 +186,164 @@ go run main.go
 ### 客户端连接测试
 ```bash
 # 使用 Redis 官方客户端
-redis-cli -h localhost -p 6379
+redis-cli -h localhost -p 6380
 
 # 测试基本命令
-127.0.0.1:6379> SET hello world
+127.0.0.1:6380> SET hello world
 OK
-127.0.0.1:6379> GET hello
+127.0.0.1:6380> GET hello
 "world"
-127.0.0.1:6379> PING
+127.0.0.1:6380> PING
 PONG
 ```
 
 ## 📊 性能基准与压力测试
 
-Redigo 提供了完善的压力测试工具来评估服务器性能。所有压力测试工具都位于 `test/stress/` 目录中。
+Redis 提供了 `redis-benchmark` 工具来测试性能，以下是详细的使用指导：
 
-### 🚀 快速开始压力测试
+### 📋 基础用法
 
+#### 安装 redis-benchmark
+确保已安装 Redis 客户端工具：
 ```bash
-# 1. 启动 Redigo 服务器
+# macOS
+brew install redis
+
+# Ubuntu/Debian
+sudo apt-get install redis-tools
+
+# CentOS/RHEL
+sudo yum install redis
+```
+
+#### 基本测试命令
+```bash
+# 启动 Redigo 服务器
 go run main.go
 
-# 2. 运行基础压力测试（另开终端）
-./run_stress_test.sh -c 50 -n 1000 -cmd SET
-
-# 3. 运行集合操作测试
-./run_stress_test.sh -c 40 -n 800 -cmd SADD -d 64
-
-# 4. 运行所有预定义测试场景
-./run_stress_test.sh --scenarios
+# 在另一个终端运行基准测试
+redis-benchmark -h localhost -p 6380 -n 100000 -c 50
 ```
 
-### 📈 性能测试工具
+### 🎯 常用测试场景
 
-#### 1. 独立压力测试工具
-功能最全面的压力测试工具，支持多种参数配置：
-
+#### 字符串操作性能测试
 ```bash
-# 进入压力测试目录
-cd test/stress
+# SET 命令测试
+redis-benchmark -h localhost -p 6380 -n 100000 -c 50 -t set
 
-# 基础使用
-go run main.go
+# GET 命令测试
+redis-benchmark -h localhost -p 6380 -n 100000 -c 50 -t get
 
-# 自定义参数测试
-go run main.go -c 50 -n 1000 -cmd SET -d 64
-
-# 基于时间的测试
-go run main.go -c 100 -t 30s -cmd GET --progress
-
-# 测试集合操作
-go run main.go -c 40 -n 800 -cmd SADD -d 64
-go run main.go -c 30 -n 600 -cmd SMEMBERS
+# 混合 SET/GET 测试
+redis-benchmark -h localhost -p 6380 -n 50000 -c 25 -t set,get
 ```
 
-**支持的命令**: 
-- **基础操作**: SET, GET, PING
-- **哈希操作**: HSET, HGET  
-- **列表操作**: LPUSH, RPUSH, LPOP
-- **集合操作**: SADD, SMEMBERS
-
-#### 2. 便捷测试脚本
-预定义多种测试场景的脚本，包括集合操作测试：
-
+#### 列表操作性能测试
 ```bash
-# 从项目根目录运行
-./run_stress_test.sh --scenarios  # 运行所有8个预定义场景
+# LPUSH 测试
+redis-benchmark -h localhost -p 6380 -n 50000 -c 25 -t lpush
 
-# 或直接在压力测试目录运行
-cd test/stress
-./stress_test.sh --scenarios
+# LPOP 测试
+redis-benchmark -h localhost -p 6380 -n 50000 -c 25 -t lpop
+
+# LRANGE 测试
+redis-benchmark -h localhost -p 6380 -n 10000 -c 10 -t lrange_100,lrange_300,lrange_500
 ```
 
-**测试场景包括**:
-- Scenario 1-2: 基础操作（SET, GET）
-- Scenario 3: 连接测试（PING）
-- Scenario 4: 哈希操作 (HSET)
-- Scenario 5: 列表操作 (LPUSH)
-- Scenario 6-8: 集合操作 (SADD, SMEMBERS, 混合测试)
-
-#### 3. Go Benchmark 测试
-集成到 Go 测试框架的基准测试：
-
+#### 哈希操作性能测试
 ```bash
-# 进入压力测试目录
-cd test/stress
-
-# 运行所有基准测试
-go test -bench=. -benchmem
-
-# 运行特定基准测试
-go test -bench=BenchmarkSET -benchmem
-
-# 并发安全测试
-go test -race -bench=. -benchtime=10s
+# HSET 测试
+redis-benchmark -h localhost -p 6380 -n 50000 -c 25 -t hset,hget
 ```
 
-### 📊 性能测试结果
-
-> 测试环境：Apple M2 芯片，16GB 内存，macOS Sonoma
-
-#### 🏆 综合性能表现
-
-| 测试场景 | 并发连接 | 总请求数 | QPS | 成功率 | 最小延迟 | 最大延迟 |
-|---------|---------|---------|-----|-------|----------|----------|
-| **PING测试** | 100 | 50,000 | **103,983** | 100% | 11.6µs | 48.2ms |
-| **集合查询** | 30 | 18,000 | **99,470** | 100% | 14.8µs | 20.8ms |
-| **字符串写入** | 50 | 50,000 | **96,388** | 100% | 12.5µs | 12.8ms |
-| **列表操作** | 25 | 15,000 | **92,092** | 100% | 15.3µs | 5.3ms |
-| **集合写入** | 40 | 32,000 | **87,480** | 100% | 12.7µs | 17.3ms |
-| **字符串读取** | 30 | 45,000 | **78,369** | 100% | 12.2µs | 44.6ms |
-| **哈希操作** | 20 | 16,000 | **5,087** | 100% | 52.9µs | 73.6ms |
-
-#### 📋 详细测试结果
-
+#### 集合操作性能测试
 ```bash
-# 场景1：字符串操作性能
-SET Operations (50 connections, 1000 requests each)
-✅ 50,000 requests completed in 518.74ms
-📊 QPS: 96,387.60 | Success Rate: 100%
-
-# 场景2：PING连接测试  
-PING Test (100 connections, 500 requests each)
-✅ 50,000 requests completed in 480.85ms
-📊 QPS: 103,982.58 | Success Rate: 100%
-
-# 场景3：集合操作性能
-SADD Operations (40 connections, 800 requests each)
-✅ 32,000 requests completed in 365.80ms  
-📊 QPS: 87,479.98 | Success Rate: 100%
-
-SMEMBERS Operations (30 connections, 600 requests each)
-✅ 18,000 requests completed in 180.96ms
-📊 QPS: 99,470.27 | Success Rate: 100%
+# SADD 测试
+redis-benchmark -h localhost -p 6380 -n 50000 -c 25 -t sadd,spop
 ```
 
-📋 **完整压力测试指南**: [test/stress/stress_testing.md](test/stress/stress_testing.md)
+#### 有序集合操作性能测试
+```bash
+# ZADD 测试
+redis-benchmark -h localhost -p 6380 -n 50000 -c 25 -t zadd,zrem
+
+# ZRANGE 测试
+redis-benchmark -h localhost -p 6380 -n 10000 -c 10 -t zadd,zrange_100,zrange_300,zrange_500
+```
+
+#### 一次测试所有命令
+```bash
+redis-benchmark -h localhost -p 6380 -n 100000 -c 50 -t set,get,lpush,lpop,lrange,hset,hget,hdel,hlen,hkeys,hvals,hmget,hmset,hsetnx,sadd,spop,smembers,srem,sinter,sinterstore,sdiff,sdiffstore,zadd,zrem,zcard,zrange,zcount,zrank
+```
+
+### 📊 参数详解
+
+| 参数 | 描述 | 示例 |
+|------|------|------|
+| `-h <hostname>` | Redis 服务器地址 | `-h localhost` |
+| `-p <port>` | Redis 服务器端口 | `-p 6380` |
+| `-n <requests>` | 总请求数 | `-n 100000` |
+| `-c <clients>` | 并发连接数 | `-c 50` |
+| `-d <size>` | 数据大小（字节） | `-d 1024` |
+| `-t <tests>` | 指定测试命令 | `-t set,get,lpush` |
+| `-k <boolean>` | 保持连接 | `-k 1` |
+| `-r <keyspacelen>` | 键空间大小 | `-r 100000` |
+| `-P <pipeline>` | 管道请求数 | `-P 10` |
+| `-q` | 静默模式，只显示结果 | `-q` |
+| `--csv` | CSV 格式输出 | `--csv` |
+
+### 📈 性能指标解读
+
+测试完成后，redis-benchmark 会显示以下关键指标：
+
+```
+====== SET ======
+  100000 requests completed in 1.23 seconds
+  50 parallel clients
+  3 bytes payload
+  keep alive: 1
+
+99.95% <= 1 milliseconds
+100.00% <= 2 milliseconds
+81234.56 requests per second
+```
+
+**关键指标说明：**
+- **Requests per second (RPS)**：每秒处理的请求数，越高越好
+- **Latency percentiles**：延迟百分位数，显示响应时间分布
+- **平均延迟**：所有请求的平均响应时间
+- **吞吐量**：服务器的数据处理能力
+
+### 📋 实际测试结果分析
+
+基于 `redis-benchmark -h localhost -p 6380 -n 100000 -c 50 -t set,get,lpush,lpop,lrange,hset,hget,hdel,hlen,hkeys,hvals,hmget,hmset,hsetnx,sadd,spop,smembers,srem,sinter,sinterstore,sdiff,sdiffstore,zadd,zrem,zcard,zrange,zcount,zrank` 的综合测试结果：
+
+#### 🚀 核心操作性能表现
+
+| 操作类型 | QPS | 平均延迟(ms) | P95延迟(ms) | P99延迟(ms) |
+|---------|-----|-------------|-------------|-------------|
+| **SET** | 148,368 | 0.193 | 0.295 | 0.671 |
+| **GET** | 149,031 | 0.186 | 0.279 | 0.447 |
+| **LPUSH** | 163,666 | 0.176 | 0.247 | 0.399 |
+| **LPOP** | 153,610 | 0.184 | 0.279 | 0.359 |
+| **HSET** | 163,132 | 0.174 | 0.247 | 0.335 |
+| **SADD** | 143,062 | 0.193 | 0.287 | 0.407 |
+| **SPOP** | 160,772 | 0.175 | 0.255 | 0.311 |
+| **ZADD** | 162,866 | 0.177 | 0.247 | 0.359 |
+
+#### 📋 范围查询性能分析
+
+| LRANGE操作 | QPS | 平均延迟(ms) | P95延迟(ms) | P99延迟(ms) | 适用场景 |
+|-----------|-----|-------------|-------------|-------------|----------|
+| **LRANGE_100** | 45,167 | 0.613 | 1.087 | 2.703 | 小数据量查询 |
+| **LRANGE_300** | 22,619 | 1.146 | 1.647 | 2.719 | 中等数据量查询 |
+| **LRANGE_500** | 15,352 | 1.663 | 2.279 | 3.487 | 大数据量查询 |
+| **LRANGE_600** | 13,344 | 1.881 | 2.375 | 2.903 | 超大数据量查询 |
+
+#### 🎯 性能亮点
+
+基础操作（SET/GET/LPUSH/HSET等）均达到 **14万+ QPS**，最高性能的 LPUSH 操作达到 **16.3万+ QPS**，所有基础操作平均延迟均低于 **0.2ms**，P95 延迟保持在 **0.3ms** 以内，P99 延迟控制在 **0.7ms** 以内
 
 ## 🗓 TODO
 

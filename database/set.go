@@ -67,7 +67,6 @@ func execSAdd(db *DB, args [][]byte) resp.Reply {
 func execSCard(db *DB, args [][]byte) resp.Reply {
 	key := string(args[0])
 
-	// Get set
 	setObj, errReply := getAsSet(db, key)
 	if errReply != nil {
 		return errReply
@@ -85,7 +84,6 @@ func execSIsMember(db *DB, args [][]byte) resp.Reply {
 	key := string(args[0])
 	member := string(args[1])
 
-	// Get set
 	setObj, errReply := getAsSet(db, key)
 	if errReply != nil {
 		return errReply
@@ -96,8 +94,9 @@ func execSIsMember(db *DB, args [][]byte) resp.Reply {
 
 	if setObj.Contains(member) {
 		return reply.MakeIntReply(1)
+	} else {
+		return reply.MakeIntReply(0)
 	}
-	return reply.MakeIntReply(0)
 }
 
 // execSMembers implements SMEMBERS key
@@ -105,23 +104,32 @@ func execSIsMember(db *DB, args [][]byte) resp.Reply {
 func execSMembers(db *DB, args [][]byte) resp.Reply {
 	key := string(args[0])
 
-	// Get set
-	setObj, errReply := getAsSet(db, key)
-	if errReply != nil {
-		return errReply
-	}
-	if setObj == nil {
-		return reply.MakeMultiBulkReply([][]byte{})
-	}
+	var result resp.Reply
 
-	// Convert members to [][]byte
-	members := setObj.Members()
-	result := make([][]byte, len(members))
-	for i, member := range members {
-		result[i] = []byte(member)
-	}
+	// Use read lock to allow concurrent reads while preventing concurrent writes
+	db.WithKeyRLock(key, func() {
+		// Get set
+		setObj, errReply := getAsSet(db, key)
+		if errReply != nil {
+			result = errReply
+			return
+		}
+		if setObj == nil {
+			result = reply.MakeMultiBulkReply([][]byte{})
+			return
+		}
 
-	return reply.MakeMultiBulkReply(result)
+		// Convert members to [][]byte
+		members := setObj.Members()
+		resultBytes := make([][]byte, len(members))
+		for i, member := range members {
+			resultBytes[i] = []byte(member)
+		}
+
+		result = reply.MakeMultiBulkReply(resultBytes)
+	})
+
+	return result
 }
 
 // execSRem implements SREM key member [member...]
@@ -188,59 +196,70 @@ func execSPop(db *DB, args [][]byte) resp.Reply {
 		}
 	}
 
-	// Get set
-	setObj, errReply := getAsSet(db, key)
-	if errReply != nil {
-		return errReply
-	}
-	if setObj == nil || setObj.Len() == 0 {
-		return reply.MakeNullBulkReply()
-	}
+	var result resp.Reply
 
-	// If count is 0, return empty array
-	if count == 0 {
-		return reply.MakeMultiBulkReply([][]byte{})
-	}
+	// Use key-level locking to prevent concurrent modification of the same set
+	db.WithKeyLock(key, func() {
+		// Get set
+		setObj, errReply := getAsSet(db, key)
+		if errReply != nil {
+			result = errReply
+			return
+		}
+		if setObj == nil || setObj.Len() == 0 {
+			result = reply.MakeNullBulkReply()
+			return
+		}
 
-	// Cap count to set size
-	if count > setObj.Len() {
-		count = setObj.Len()
-	}
+		// If count is 0, return empty array
+		if count == 0 {
+			result = reply.MakeMultiBulkReply([][]byte{})
+			return
+		}
 
-	// Get random members
-	members := setObj.RandomDistinctMembers(count)
+		// Cap count to set size
+		if count > setObj.Len() {
+			count = setObj.Len()
+		}
 
-	// Remove members
-	for _, member := range members {
-		setObj.Remove(member)
-	}
+		// Get random members
+		members := setObj.RandomDistinctMembers(count)
 
-	// Store updated set or remove if empty
-	if setObj.Len() == 0 {
-		db.Remove(key)
-	} else {
-		db.PutEntity(key, &database.DataEntity{
-			Data: setObj,
-		})
-	}
+		// Remove members
+		for _, member := range members {
+			setObj.Remove(member)
+		}
 
-	// Add to AOF
-	cmdArgs := make([][]byte, 2)
-	cmdArgs[0] = []byte(key)
-	cmdArgs[1] = []byte(intToStr(count))
-	db.addAof(utils.ToCmdLineWithName("SPOP", cmdArgs...))
+		// Store updated set or remove if empty
+		if setObj.Len() == 0 {
+			db.Remove(key)
+		} else {
+			db.PutEntity(key, &database.DataEntity{
+				Data: setObj,
+			})
+		}
 
-	// If only popping one member, return it as a bulk string
-	if count == 1 {
-		return reply.MakeBulkReply([]byte(members[0]))
-	}
+		// Add to AOF
+		cmdArgs := make([][]byte, 2)
+		cmdArgs[0] = []byte(key)
+		cmdArgs[1] = []byte(intToStr(count))
+		db.addAof(utils.ToCmdLineWithName("SPOP", cmdArgs...))
 
-	// Otherwise return array of members
-	result := make([][]byte, len(members))
-	for i, member := range members {
-		result[i] = []byte(member)
-	}
-	return reply.MakeMultiBulkReply(result)
+		// If only popping one member, return it as a bulk string
+		if count == 1 {
+			result = reply.MakeBulkReply([]byte(members[0]))
+			return
+		}
+
+		// Otherwise return array of members
+		resultBytes := make([][]byte, len(members))
+		for i, member := range members {
+			resultBytes[i] = []byte(member)
+		}
+		result = reply.MakeMultiBulkReply(resultBytes)
+	})
+
+	return result
 }
 
 // execSRandMember implements SRANDMEMBER key [count]
@@ -248,51 +267,62 @@ func execSPop(db *DB, args [][]byte) resp.Reply {
 func execSRandMember(db *DB, args [][]byte) resp.Reply {
 	key := string(args[0])
 
-	// Get set
-	setObj, errReply := getAsSet(db, key)
-	if errReply != nil {
-		return errReply
-	}
-	if setObj == nil || setObj.Len() == 0 {
-		return reply.MakeNullBulkReply()
-	}
+	var result resp.Reply
 
-	// Determine count
-	count := 1
-	withReplacement := false
-	if len(args) >= 2 {
-		var err error
-		count, err = strToInt(string(args[1]))
-		if err != nil {
-			return reply.MakeStandardErrorReply("ERR value is not an integer")
+	// Use read lock to allow concurrent reads while preventing concurrent writes
+	db.WithKeyRLock(key, func() {
+		// Get set
+		setObj, errReply := getAsSet(db, key)
+		if errReply != nil {
+			result = errReply
+			return
+		}
+		if setObj == nil || setObj.Len() == 0 {
+			result = reply.MakeNullBulkReply()
+			return
 		}
 
-		// Negative count means return with replacement (can have duplicates)
-		if count < 0 {
-			withReplacement = true
-			count = -count
+		// Determine count
+		count := 1
+		withReplacement := false
+		if len(args) >= 2 {
+			var err error
+			count, err = strToInt(string(args[1]))
+			if err != nil {
+				result = reply.MakeStandardErrorReply("ERR value is not an integer")
+				return
+			}
+
+			// Negative count means return with replacement (can have duplicates)
+			if count < 0 {
+				withReplacement = true
+				count = -count
+			}
 		}
-	}
 
-	// Get random members
-	var members []string
-	if withReplacement {
-		members = setObj.RandomMembers(count)
-	} else {
-		members = setObj.RandomDistinctMembers(count)
-	}
+		// Get random members
+		var members []string
+		if withReplacement {
+			members = setObj.RandomMembers(count)
+		} else {
+			members = setObj.RandomDistinctMembers(count)
+		}
 
-	// If only returning one member, return it as a bulk string
-	if len(args) == 1 || (count == 1 && len(members) > 0) {
-		return reply.MakeBulkReply([]byte(members[0]))
-	}
+		// If only returning one member, return it as a bulk string
+		if len(args) == 1 || (count == 1 && len(members) > 0) {
+			result = reply.MakeBulkReply([]byte(members[0]))
+			return
+		}
 
-	// Otherwise return array of members
-	result := make([][]byte, len(members))
-	for i, member := range members {
-		result[i] = []byte(member)
-	}
-	return reply.MakeMultiBulkReply(result)
+		// Otherwise return array of members
+		resultBytes := make([][]byte, len(members))
+		for i, member := range members {
+			resultBytes[i] = []byte(member)
+		}
+		result = reply.MakeMultiBulkReply(resultBytes)
+	})
+
+	return result
 }
 
 // execSUnion implements SUNION key [key...]

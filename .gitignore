@@ -26,3 +26,6 @@ logs/
 
 .DS_Store
 .DS_Store?
+
+# Benchmark results
+benchmark_results/

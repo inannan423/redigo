@@ -77,7 +77,6 @@ func execZScore(db *DB, args [][]byte) resp.Reply {
 	key := string(args[0])
 	member := string(args[1])
 
-	// Get ZSet
 	zsetObj, exists := getAsZSet(db, key)
 	if !exists {
 		return reply.MakeNullBulkReply()
@@ -104,7 +103,6 @@ func execZCard(db *DB, args [][]byte) resp.Reply {
 
 	key := string(args[0])
 
-	// Get ZSet
 	zsetObj, exists := getAsZSet(db, key)
 	if !exists {
 		return reply.MakeIntReply(0)
@@ -141,34 +139,43 @@ func execZRange(db *DB, args [][]byte) resp.Reply {
 		return reply.MakeStandardErrorReply("value is not an integer or out of range")
 	}
 
-	// Get ZSet
-	zsetObj, exists := getAsZSet(db, key)
-	if !exists {
-		return reply.MakeEmptyMultiBulkReply()
-	}
-	if zsetObj == nil {
-		return reply.MakeWrongTypeErrReply()
-	}
+	var result resp.Reply
 
-	// Get range
-	members := zsetObj.RangeByRank(start, stop)
+	// Use read lock to allow concurrent reads while preventing concurrent writes
+	db.WithKeyRLock(key, func() {
+		// Get ZSet
+		zsetObj, exists := getAsZSet(db, key)
+		if !exists {
+			result = reply.MakeEmptyMultiBulkReply()
+			return
+		}
+		if zsetObj == nil {
+			result = reply.MakeWrongTypeErrReply()
+			return
+		}
 
-	// Prepare result
-	if !withScores {
-		result := make([][]byte, len(members))
-		for i, member := range members {
-			result[i] = []byte(member)
+		// Get range
+		members := zsetObj.RangeByRank(start, stop)
+
+		// Prepare result
+		if !withScores {
+			resultBytes := make([][]byte, len(members))
+			for i, member := range members {
+				resultBytes[i] = []byte(member)
+			}
+			result = reply.MakeMultiBulkReply(resultBytes)
+		} else {
+			resultBytes := make([][]byte, len(members)*2)
+			for i, member := range members {
+				resultBytes[i*2] = []byte(member)
+				score, _ := zsetObj.Score(member)
+				resultBytes[i*2+1] = []byte(strconv.FormatFloat(score, 'f', -1, 64))
+			}
+			result = reply.MakeMultiBulkReply(resultBytes)
 		}
-		return reply.MakeMultiBulkReply(result)
-	} else {
-		result := make([][]byte, len(members)*2)
-		for i, member := range members {
-			result[i*2] = []byte(member)
-			score, _ := zsetObj.Score(member)
-			result[i*2+1] = []byte(strconv.FormatFloat(score, 'f', -1, 64))
-		}
-		return reply.MakeMultiBulkReply(result)
-	}
+	})
+
+	return result
 }
 
 // execZRem implements the ZREM command
@@ -238,19 +245,28 @@ func execZCount(db *DB, args [][]byte) resp.Reply {
 		return err
 	}
 
-	// Get ZSet
-	zsetObj, exists := getAsZSet(db, key)
-	if !exists {
-		return reply.MakeIntReply(0)
-	}
-	if zsetObj == nil {
-		return reply.MakeWrongTypeErrReply()
-	}
+	var result resp.Reply
 
-	// Count elements in range
-	count := zsetObj.Count(min, max)
+	// Use read lock to allow concurrent reads while preventing concurrent writes
+	db.WithKeyRLock(key, func() {
+		// Get ZSet
+		zsetObj, exists := getAsZSet(db, key)
+		if !exists {
+			result = reply.MakeIntReply(0)
+			return
+		}
+		if zsetObj == nil {
+			result = reply.MakeWrongTypeErrReply()
+			return
+		}
 
-	return reply.MakeIntReply(int64(count))
+		// Count elements in range
+		count := zsetObj.Count(min, max)
+
+		result = reply.MakeIntReply(int64(count))
+	})
+
+	return result
 }
 
 // execZRank implements the ZRANK command
@@ -263,43 +279,51 @@ func execZRank(db *DB, args [][]byte) resp.Reply {
 	key := string(args[0])
 	member := string(args[1])
 
-	// Get ZSet
-	zsetObj, exists := getAsZSet(db, key)
-	if !exists {
-		return reply.MakeNullBulkReply()
-	}
-	if zsetObj == nil {
-		return reply.MakeWrongTypeErrReply()
-	}
+	var result resp.Reply
 
-	// Get member's rank
-	score, exists := zsetObj.Score(member)
-	if !exists {
-		return reply.MakeNullBulkReply()
-	}
+	// Use read lock to allow concurrent reads while preventing concurrent writes
+	db.WithKeyRLock(key, func() {
+		// Get ZSet
+		zsetObj, exists := getAsZSet(db, key)
+		if !exists {
+			result = reply.MakeNullBulkReply()
+			return
+		}
+		if zsetObj == nil {
+			result = reply.MakeWrongTypeErrReply()
+			return
+		}
 
-	// Using skiplist's GetRank method
-	rank := -1
-	if zsetObj.Encoding() == 1 { // Using skiplist encoding
-		// We need to access the skiplist from the ZSet implementation
-		skiplist := zsetObj.GetSkiplist()
-		rank = skiplist.GetRank(member, score)
-	} else {
-		// For listpack encoding, we need to compute rank by sorting
-		members := zsetObj.RangeByRank(0, -1)
-		for i, m := range members {
-			if m == member {
-				rank = i
-				break
+		score, exists := zsetObj.Score(member)
+		if !exists {
+			result = reply.MakeNullBulkReply()
+			return
+		}
+
+		// Calculate rank
+		rank := -1
+		if zsetObj.Encoding() == 1 {
+			skiplist := zsetObj.GetSkiplist()
+			rank = skiplist.GetRank(member, score)
+		} else {
+			members := zsetObj.RangeByRank(0, -1)
+			for i, m := range members {
+				if m == member {
+					rank = i
+					break
+				}
 			}
 		}
-	}
 
-	if rank == -1 {
-		return reply.MakeNullBulkReply()
-	}
+		if rank == -1 {
+			result = reply.MakeNullBulkReply()
+			return
+		}
 
-	return reply.MakeIntReply(int64(rank))
+		result = reply.MakeIntReply(int64(rank))
+	})
+
+	return result
 }
 
 // execZTYPE implements the ZTYPE command
