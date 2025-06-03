@@ -68,27 +68,29 @@ func (h *AofHandler) AddAof(dbIndex int, cmdLine CmdLine) {
 func (h *AofHandler) handleAof() {
 	h.currentDB = 0
 	for p := range h.aofChan {
-		// Write the SELECT command if the database index has changed
+		var dataToWrite []byte
+
+		// 原子性地准备所有要写入的数据
 		if p.dbIndex != h.currentDB {
 			h.currentDB = p.dbIndex
-			// Write the SELECT command to the AOF file
-			data := reply.MakeMultiBulkReply(utils.ToCmdLine("SELECT", strconv.Itoa(p.dbIndex))).ToBytes()
-			_, err := h.aofFile.Write(data)
-			if err != nil {
-				logger.Error("AOF write error: " + err.Error())
-				// Continue to the next command
-				continue
-			}
+			// 准备 SELECT 命令数据
+			selectData := reply.MakeMultiBulkReply(utils.ToCmdLine("SELECT", strconv.Itoa(p.dbIndex))).ToBytes()
+			cmdData := reply.MakeMultiBulkReply(p.cmdLine).ToBytes()
+			// 合并为一次写入
+			dataToWrite = append(selectData, cmdData...)
+		} else {
+			dataToWrite = reply.MakeMultiBulkReply(p.cmdLine).ToBytes()
 		}
 
-		// Write the command line to the AOF file
-		data := reply.MakeMultiBulkReply(p.cmdLine).ToBytes()
-		_, err := h.aofFile.Write(data)
+		// 原子性写入
+		_, err := h.aofFile.Write(dataToWrite)
 		if err != nil {
 			logger.Error("AOF write error: " + err.Error())
-			// Continue to the next command
 			continue
 		}
+
+		// 确保数据立即刷新到磁盘
+		h.aofFile.Sync()
 	}
 }
 

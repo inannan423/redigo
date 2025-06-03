@@ -64,6 +64,7 @@ func (h *RespHandler) Handle(ctx context.Context, conn net.Conn) {
 
 	ch := parser.ParseStream(conn)
 	for payload := range ch {
+		// fmt.Println("payload:", payload)
 		if payload.Err != nil {
 			if payload.Err == io.EOF ||
 				payload.Err == io.ErrUnexpectedEOF ||

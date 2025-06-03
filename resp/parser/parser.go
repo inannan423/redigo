@@ -58,7 +58,6 @@ func parseIt(reader io.Reader, ch chan<- *Payload) {
 	for {
 		var ioErr bool // Whether it is an IO error
 		msg, ioErr, err = readLine(bufReader, &state)
-
 		if err != nil {
 			// If it is an IO error, close the channel and exit the loop
 			if ioErr {

@@ -76,5 +76,4 @@ func ListenAndServe(listener net.Listener, handler tcp.Handler, closeChan <-chan
 		}()
 	}
 	waitDone.Wait()
-
 }
