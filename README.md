@@ -12,6 +12,8 @@
 ### 🌐 在线笔记
 📚 **[完整笔记 - 在线阅读](https://redigo.vercel.app/)** 
 
+> Deepwiki：[AI 生成的技术文档，可以和代码对话](https://deepwiki.com/inannan423/redigo)
+
 本地运行笔记：
 ```bash
 cd guide
