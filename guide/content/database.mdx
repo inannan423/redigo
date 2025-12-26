@@ -133,12 +133,10 @@ func (dict *SyncDict) Len() int {
 接下来实现 `Put` 方法，用于添加键值对。如果键已经存在，则覆盖原有的值，返回 0；如果键不存在，则添加键值对，返回 1。也就是说如果键已经存在，则不添加键值对但是进行值的修改。
 
 ```go filename="datastruct/dict/sync_dict.go"
-// Put adds a key-value pair to the dictionary, if the key already exists, return 1 else 0
+// Put adds a key-value pair to the dictionary, if the key already exists, return 0 else 1
 func (dict *SyncDict) Put(key string, val interface{}) (result int) {
-	_, exists := dict.m.Load(key)
-	// Store the key-value pair
-	dict.m.Store(key, val)
-	// Return the count of pairs
+	// Use Swap to atomically store and check if key existed
+	_, exists := dict.m.Swap(key, val)
 	if exists {
 		return 0
 	}
@@ -146,7 +144,7 @@ func (dict *SyncDict) Put(key string, val interface{}) (result int) {
 }
 ```
 
-在这里我们使用 `Store` 方法来添加键值对。`Store` 方法会覆盖原有的值。我们只需要判断键是否存在，然后返回 0 或 1 即可。
+在这里我们使用 Go 1.20 引入的 `Swap` 方法来原子地添加键值对。`Swap` 方法会返回被替换的旧值和一个布尔值表示键是否存在。这样可以避免 `Load` + `Store` 之间的竞态条件。
 
 <Callout>
 **为啥这里要返回 0 或 1 呢？**
@@ -156,48 +154,75 @@ func (dict *SyncDict) Put(key string, val interface{}) (result int) {
 
 ### PutIfAbsent 和 PutIfExists
 
-接下来实现 `PutIfAbsent` 和 `PutIfExists` 方法。`PutIfAbsent` 方法用于仅在键不存在时添加键值对，`PutIfExists` 方法用于仅在键存在时添加键值对。我们可以使用 `Load` 方法来判断键是否存在。然后使用 `Store` 方法来添加键值对。
+接下来实现 `PutIfAbsent` 和 `PutIfExists` 方法。`PutIfAbsent` 方法用于仅在键不存在时添加键值对，`PutIfExists` 方法用于仅在键存在时添加键值对。
+
+<Callout type="warning">
+**并发安全注意事项**
+
+如果简单地使用 `Load` 方法来判断键是否存在，然后使用 `Store` 方法来添加键值对，会存在 **"check-then-act"（先检查后操作）** 竞态条件问题。
+
+例如，在 `PutIfAbsent` 中：
+- Goroutine A 调用 `Load(key)` 发现键不存在
+- Goroutine B 也调用 `Load(key)` 发现键不存在
+- Goroutine B 调用 `Store(key, valB)` 成功插入
+- Goroutine A 调用 `Store(key, valA)` 覆盖了 B 的值
+
+这违反了 "仅在不存在时插入" 的语义。因此我们需要使用 `sync.Map` 提供的原子操作来避免这个问题。
+</Callout>
+
+对于 `PutIfAbsent`，我们使用 `LoadOrStore` 方法。这个方法会原子地检查键是否存在，如果不存在则插入新值：
 
 ```go filename="datastruct/dict/sync_dict.go"
-// PutIfAbsent adds a key-value pair to the dictionary if the key does not exist, return 1 if it exists, else 0
+// PutIfAbsent adds a key-value pair to the dictionary if the key does not exist, return 1 if success, else 0
 func (dict *SyncDict) PutIfAbsent(key string, val interface{}) (result int) {
-	_, exists := dict.m.Load(key)
-	if exists {
-		return 0
+	// Use LoadOrStore to atomically check and store
+	_, loaded := dict.m.LoadOrStore(key, val)
+	if loaded {
+		return 0 // key already exists
 	}
-	// Store the key-value pair
-	dict.m.Store(key, val)
-	return 1
-}
-
-// PutIfExists adds a key-value pair to the dictionary if the key exists, return 1 if it does not exist, else 0
-func (dict *SyncDict) PutIfExists(key string, val interface{}) (result int) {
-	_, exists := dict.m.Load(key)
-	if !exists {
-		return 0
-	}
-	// Store the key-value pair
-	dict.m.Store(key, val)
-	return 1
+	return 1 // successfully inserted
 }
 ```
 
+对于 `PutIfExists`，我们使用 Go 1.20 引入的 `CompareAndSwap` 方法。由于 `sync.Map` 没有直接提供 "仅在存在时更新" 的原子操作，我们需要使用 CAS（Compare-And-Swap）循环来实现：
+
+```go filename="datastruct/dict/sync_dict.go"
+// PutIfExists adds a key-value pair to the dictionary if the key exists, return 1 if success, else 0
+func (dict *SyncDict) PutIfExists(key string, val interface{}) (result int) {
+	// Use CompareAndSwap to atomically update only if key exists
+	for {
+		old, exists := dict.m.Load(key)
+		if !exists {
+			return 0 // key does not exist
+		}
+		// Atomically compare and swap the value
+		if dict.m.CompareAndSwap(key, old, val) {
+			return 1 // successfully updated
+		}
+		// CAS failed, another goroutine modified the value, retry
+	}
+}
+```
+
+这里使用了 CAS 循环：先加载旧值，然后尝试原子地替换。如果在 `Load` 和 `CompareAndSwap` 之间有其他 goroutine 修改了值，`CompareAndSwap` 会失败，我们就重试。
+
 ### Remove
 
-接下来实现 `Remove` 方法，用于删除键值对。我们可以使用 `Load` 方法来判断键是否存在。然后使用 `Delete` 方法来删除键值对。
+接下来实现 `Remove` 方法，用于删除键值对。同样地，如果使用 `Load` + `Delete` 的方式，会存在竞态条件。我们使用 `LoadAndDelete` 方法（Go 1.15+）来原子地检查并删除键值对：
 
 ```go filename="datastruct/dict/sync_dict.go"
 // Remove removes a key-value pair from the dictionary, return the count of pairs were removed
 func (dict *SyncDict) Remove(key string) (result int) {
-	_, exists := dict.m.Load(key)
-	if !exists {
-		return 0
+	// Use LoadAndDelete to atomically check and delete
+	_, loaded := dict.m.LoadAndDelete(key)
+	if loaded {
+		return 1 // successfully deleted
 	}
-	// Delete the key-value pair
-	dict.m.Delete(key)
-	return 1
+	return 0 // key did not exist
 }
 ```
+
+`LoadAndDelete` 方法会原子地删除键并返回被删除的值，避免了 `Load` 和 `Delete` 之间的竞态条件。
 
 ### ForEach
 
@@ -594,9 +619,9 @@ func (db *DB) Remove(key string) int {
 func (db *DB) Removes(keys ...string) int {
 	deleted := 0
 	for _, key := range keys {
-		_, ok := db.data.Get(key)
-		if ok {
-			db.data.Remove(key)
+		// Use Remove's return value directly to avoid race condition between Get and Remove
+		result := db.data.Remove(key)
+		if result > 0 {
 			deleted++
 		}
 	}

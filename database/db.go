@@ -236,9 +236,8 @@ func getAsZSet(db *DB, key string) (zset.ZSet, bool) {
 func (db *DB) Removes(keys ...string) int {
 	deleted := 0
 	for _, key := range keys {
-		_, ok := db.data.Get(key)
-		if ok {
-			db.data.Remove(key)
+		result := db.data.Remove(key)
+		if result > 0 {
 			// Clean up the lock for the deleted key to prevent memory leaks
 			db.lockMgr.CleanupLock(key)
 			deleted++

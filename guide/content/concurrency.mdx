@@ -223,9 +223,9 @@ func (db *DB) Remove(key string) int {
 func (db *DB) Removes(keys ...string) int {
 	deleted := 0
 	for _, key := range keys {
-		_, ok := db.data.Get(key)
-		if ok {
-			db.data.Remove(key)
+		// Use Remove's return value directly to avoid race condition between Get and Remove
+		result := db.data.Remove(key)
+		if result > 0 {
 			// Clean up the lock for the deleted key to prevent memory leaks
 			db.lockMgr.CleanupLock(key)
 			deleted++

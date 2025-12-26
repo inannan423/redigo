@@ -33,49 +33,48 @@ func (dict *SyncDict) Len() int {
 	return count
 }
 
-// Put adds a key-value pair to the dictionary, if the key already exists, return 1 else 0
+// Put adds a key-value pair to the dictionary, if the key already exists, return 0 else 1
 func (dict *SyncDict) Put(key string, val interface{}) (result int) {
-	_, exists := dict.m.Load(key)
-	// Store the key-value pair
-	dict.m.Store(key, val)
-	// Return the count of pairs
+	// Use Swap to atomically store and check if key existed
+	_, exists := dict.m.Swap(key, val)
 	if exists {
 		return 0
 	}
 	return 1
 }
 
-// PutIfAbsent adds a key-value pair to the dictionary if the key does not exist, return 1 if it exists, else 0
+// PutIfAbsent adds a key-value pair to the dictionary if the key does not exist, return 1 if success, else 0
 func (dict *SyncDict) PutIfAbsent(key string, val interface{}) (result int) {
-	_, exists := dict.m.Load(key)
-	if exists {
-		return 0
+	_, loaded := dict.m.LoadOrStore(key, val)
+	if loaded {
+		return 0 // key already exists
 	}
-	// Store the key-value pair
-	dict.m.Store(key, val)
-	return 1
+	return 1 // successfully inserted
 }
 
-// PutIfExists adds a key-value pair to the dictionary if the key exists, return 1 if it does not exist, else 0
+// PutIfExists adds a key-value pair to the dictionary if the key exists, return 1 if success, else 0
 func (dict *SyncDict) PutIfExists(key string, val interface{}) (result int) {
-	_, exists := dict.m.Load(key)
-	if !exists {
-		return 0
+	for {
+		old, exists := dict.m.Load(key)
+		if !exists {
+			return 0 // key does not exist
+		}
+		// Atomically compare and swap the value
+		if dict.m.CompareAndSwap(key, old, val) {
+			return 1 // successfully updated
+		}
+		// CAS failed, another goroutine modified the value, retry
 	}
-	// Store the key-value pair
-	dict.m.Store(key, val)
-	return 1
 }
 
 // Remove removes a key-value pair from the dictionary, return the count of pairs were removed
 func (dict *SyncDict) Remove(key string) (result int) {
-	_, exists := dict.m.Load(key)
-	if !exists {
-		return 0
+	// Use LoadAndDelete to atomically check and delete
+	_, loaded := dict.m.LoadAndDelete(key)
+	if loaded {
+		return 1 // successfully deleted
 	}
-	// Delete the key-value pair
-	dict.m.Delete(key)
-	return 1
+	return 0 // key did not exist
 }
 
 // ForEach iterates over all key-value pairs in the dictionary and applies the consumer function to each pair
