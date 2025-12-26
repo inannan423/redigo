@@ -1,7 +1,6 @@
 import React from 'react'
 
 import { Footer, Layout, Navbar } from 'nextra-theme-docs'
-import { useRouter } from 'next/router'
 import Link from 'next/link'
 
 const footer = <Footer>
