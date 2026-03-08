@@ -17,6 +17,7 @@ func execHSet(db *DB, args [][]byte) resp.Reply {
 	// Use key-level locking to prevent concurrent modification of the same hash
 	db.WithKeyLock(key, func() {
 		hashObj, _ := db.getOrCreateHash(key)
+		db.ClearExpire(key)
 		res := hashObj.Set(field, value)
 
 		db.addAof(utils.ToCmdLineWithName("HSET", args...))
@@ -81,11 +82,13 @@ func execHDel(db *DB, args [][]byte) resp.Reply {
 			deleted += hash.Delete(string(field))
 		}
 
-		if hash.Len() == 0 {
-			db.Remove(key)
-		}
-
 		if deleted > 0 {
+			if hash.Len() == 0 {
+				db.Remove(key)
+			} else {
+				db.ClearExpire(key)
+			}
+
 			db.addAof(utils.ToCmdLineWithName("hdel", args...))
 		}
 
@@ -234,6 +237,7 @@ func execHMSet(db *DB, args [][]byte) resp.Reply {
 	// Use key-level locking to prevent concurrent modification of the same hash
 	db.WithKeyLock(key, func() {
 		hash, _ := db.getOrCreateHash(key)
+		db.ClearExpire(key)
 
 		for i := 1; i < len(args); i += 2 {
 			field := string(args[i])
@@ -282,6 +286,7 @@ func execHSetNX(db *DB, args [][]byte) resp.Reply {
 			return
 		}
 
+		db.ClearExpire(key)
 		hash.Set(field, value)
 
 		db.addAof(utils.ToCmdLineWithName("HSETNX", args...))

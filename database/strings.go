@@ -5,6 +5,9 @@ import (
 	"redigo/interface/resp"
 	"redigo/lib/utils"
 	"redigo/resp/reply"
+	"strconv"
+	"strings"
+	"time"
 )
 
 // execGet retrieves the value associated with the specified key from the database.
@@ -21,11 +24,70 @@ func execGet(db *DB, args [][]byte) resp.Reply {
 func execSet(db *DB, args [][]byte) resp.Reply {
 	key := string(args[0])
 	value := args[1]
+
+	var expireAt int64
+	hasExpire := false
+	if len(args) > 2 {
+		if (len(args)-2)%2 != 0 {
+			return reply.MakeStandardErrorReply("ERR syntax error")
+		}
+		for i := 2; i < len(args); i += 2 {
+			option := strings.ToLower(string(args[i]))
+			if option != "ex" && option != "px" {
+				return reply.MakeStandardErrorReply("ERR syntax error")
+			}
+			if hasExpire {
+				return reply.MakeStandardErrorReply("ERR syntax error")
+			}
+			ttlValue, err := strconv.ParseInt(string(args[i+1]), 10, 64)
+			if err != nil {
+				return reply.MakeStandardErrorReply("ERR value is not an integer or out of range")
+			}
+			if ttlValue <= 0 {
+				return reply.MakeStandardErrorReply("ERR invalid expire time in set")
+			}
+			if option == "ex" {
+				expireAt = time.Now().UnixMilli() + ttlValue*1000
+			} else {
+				expireAt = time.Now().UnixMilli() + ttlValue
+			}
+			hasExpire = true
+		}
+	}
+
 	entity := &database.DataEntity{
 		Data: value,
 	}
 	db.PutEntity(key, entity)
-	db.addAof(utils.ToCmdLineWithName("SET", args...))
+	db.addAof(utils.ToCmdLineWithName("SET", []byte(key), value))
+	if hasExpire {
+		db.SetExpire(key, expireAt)
+		db.addAof(utils.ToCmdLineWithName("PEXPIREAT", []byte(key), []byte(strconv.FormatInt(expireAt, 10))))
+	}
+	return reply.MakeOKReply()
+}
+
+// execSetEX stores the specified key-value pair with expiration time in seconds.
+func execSetEX(db *DB, args [][]byte) resp.Reply {
+	key := string(args[0])
+	seconds, err := strconv.ParseInt(string(args[1]), 10, 64)
+	if err != nil {
+		return reply.MakeStandardErrorReply("ERR value is not an integer or out of range")
+	}
+	if seconds <= 0 {
+		return reply.MakeStandardErrorReply("ERR invalid expire time in setex")
+	}
+	value := args[2]
+
+	entity := &database.DataEntity{
+		Data: value,
+	}
+	db.PutEntity(key, entity)
+	expireAt := time.Now().UnixMilli() + seconds*1000
+	db.SetExpire(key, expireAt)
+
+	db.addAof(utils.ToCmdLineWithName("SET", []byte(key), value))
+	db.addAof(utils.ToCmdLineWithName("PEXPIREAT", []byte(key), []byte(strconv.FormatInt(expireAt, 10))))
 	return reply.MakeOKReply()
 }
 
@@ -72,9 +134,9 @@ func execStrLen(db *DB, args [][]byte) resp.Reply {
 
 func init() {
 	RegisterCommand("GET", execGet, 2)
-	RegisterCommand("SET", execSet, 3)
+	RegisterCommand("SET", execSet, -3)
 	RegisterCommand("SETNX", execSetNX, 3)
 	RegisterCommand("GETSET", execGetSet, 3)
-	RegisterCommand("SETEX", execSet, 4)
+	RegisterCommand("SETEX", execSetEX, 4)
 	RegisterCommand("STRLEN", execStrLen, 2)
 }

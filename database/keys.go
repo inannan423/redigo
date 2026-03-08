@@ -102,6 +102,9 @@ func execKeys(db *DB, args [][]byte) resp.Reply {
 	pattern := wildcard.CompilePattern(string(args[0]))
 	result := make([][]byte, 0) // Store all matching keys
 	db.data.ForEach(func(key string, val interface{}) bool {
+		if db.isExpired(key) {
+			return true
+		}
 		if pattern.IsMatch(key) {
 			result = append(result, []byte(key))
 		}
