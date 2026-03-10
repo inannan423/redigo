@@ -5,6 +5,7 @@ import (
 	"redigo/config"
 	"redigo/interface/resp"
 	"redigo/lib/logger"
+	"redigo/rdb"
 	"redigo/resp/reply"
 	"strconv"
 	"strings"
@@ -13,6 +14,7 @@ import (
 type StandaloneDatabase struct {
 	dbSet      []*DB
 	aofHandler *aof.AofHandler
+	rdbHandler *rdb.RDBHandler
 }
 
 // NewStandaloneDatabase creates a new StandaloneDatabase instance
@@ -43,6 +45,9 @@ func NewStandaloneDatabase() *StandaloneDatabase {
 		}
 	}
 
+	// 初始化 RDB
+	database.rdbHandler = rdb.InitRDB(database)
+
 	return database
 }
 
@@ -71,6 +76,19 @@ func (d *StandaloneDatabase) AfterClientClose(c resp.Connection) {
 
 func (d *StandaloneDatabase) Close() {
 
+}
+
+// GetDBs returns all database instances
+func (d *StandaloneDatabase) GetDBs() []*DB {
+	return d.dbSet
+}
+
+// GetDB returns a specific database by index
+func (d *StandaloneDatabase) GetDB(index int) *DB {
+	if index < 0 || index >= len(d.dbSet) {
+		return nil
+	}
+	return d.dbSet[index]
 }
 
 // execSelect sets the current database for the client connection.

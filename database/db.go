@@ -66,6 +66,7 @@ type DB struct {
 	data    dict.Dict
 	addAof  func(CmdLine)
 	lockMgr *KeyLockManager
+	expires dict.Dict // key -> expireTime (in milliseconds)
 }
 
 // MakeDB creates a new DB instance
@@ -78,7 +79,22 @@ func MakeDB() *DB {
 			// can be overridden by the database instance
 		},
 		lockMgr: NewKeyLockManager(),
+		expires: dict.MakeSyncDict(),
 	}
+}
+
+// GetDict returns the data dictionary for RDB persistence
+func (db *DB) GetDict() dict.Dict {
+	return db.data
+}
+
+// GetExpireTime returns the expire time for a key (in milliseconds), returns 0 if not set
+func (db *DB) GetExpireTime(key string) int64 {
+	expireTime, ok := db.expires.Get(key)
+	if !ok {
+		return 0
+	}
+	return expireTime.(int64)
 }
 
 // ExecFunc is a function type that takes a DB instance and a slice of byte slices as arguments and returns a resp.Reply
