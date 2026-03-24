@@ -164,7 +164,7 @@ func MakeOKReply() *OKReply {
 // NullBulkReply 空的 Bulk 回复(字符串 nil)
 type NullBulkReply struct{}
 
-func (r *EmptyBulkReply) ToBytes() []byte {
+func (r *NullBulkReply) ToBytes() []byte {
 	return []byte("$-1\r\n") // -1，表示 nil 值
 }
 
