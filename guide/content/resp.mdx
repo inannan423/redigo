@@ -443,6 +443,11 @@ type StatusReply struct {
 	Status string
 }
 
+// ToBytes marshal redis.Reply
+func (r *StatusReply) ToBytes() []byte {
+	return []byte("+" + r.Status + CRLF)
+}
+
 // MakeStatusReply creates StatusReply
 func MakeStatusReply(status string) *StatusReply {
 	return &StatusReply{
