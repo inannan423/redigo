@@ -21,6 +21,11 @@ type ServerProperties struct {
 	Databases      int      `cfg:"databases"`
 	Peers          []string `cfg:"peers"`
 	Self           string   `cfg:"self"`
+	
+	// RDB 持久化配置
+	Save        string `cfg:"save"`        // RDB 自动保存配置，如 "900 1" 表示 900 秒内至少 1 次修改则触发保存
+	DBFilename  string `cfg:"dbfilename"`  // RDB 文件名，默认为 dump.rdb
+	Dir         string `cfg:"dir"`         // RDB 文件保存目录，默认为当前目录
 }
 
 // Properties 存储全局配置
