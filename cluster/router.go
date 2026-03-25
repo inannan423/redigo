@@ -15,6 +15,14 @@ func makeRouter() map[string]CmdFunc {
 	routerMap["get"] = defaultFunc    // get key
 	routerMap["setnx"] = defaultFunc  // setnx key
 	routerMap["getset"] = defaultFunc // getset key
+	routerMap["setex"] = defaultFunc  // setex key
+	routerMap["expire"] = defaultFunc
+	routerMap["pexpire"] = defaultFunc
+	routerMap["expireat"] = defaultFunc
+	routerMap["pexpireat"] = defaultFunc
+	routerMap["ttl"] = defaultFunc
+	routerMap["pttl"] = defaultFunc
+	routerMap["persist"] = defaultFunc
 
 	routerMap["ping"] = pingFunc     // ping command
 	routerMap["rename"] = renameFunc // rename key

@@ -10,6 +10,7 @@ import (
 	"redigo/resp/reply"
 	"strings"
 	"sync"
+	"time"
 )
 
 // KeyLockManager manages locks for individual keys
@@ -64,6 +65,7 @@ func (klm *KeyLockManager) CleanupLock(key string) {
 type DB struct {
 	index   int
 	data    dict.Dict
+	expires dict.Dict
 	addAof  func(CmdLine)
 	lockMgr *KeyLockManager
 }
@@ -71,8 +73,9 @@ type DB struct {
 // MakeDB creates a new DB instance
 func MakeDB() *DB {
 	return &DB{
-		index: 0,
-		data:  dict.MakeSyncDict(),
+		index:   0,
+		data:    dict.MakeSyncDict(),
+		expires: dict.MakeSyncDict(),
 		addAof: func(line CmdLine) {
 			// No-op by default,
 			// can be overridden by the database instance
@@ -122,10 +125,50 @@ func ValidateArity(arity int, args [][]byte) bool {
 	}
 }
 
+// SetExpire sets the expiration time for a key (unix milliseconds).
+func (db *DB) SetExpire(key string, expireAt int64) {
+	db.expires.Put(key, expireAt)
+}
+
+// GetExpire retrieves the expiration time for a key.
+func (db *DB) GetExpire(key string) (int64, bool) {
+	raw, ok := db.expires.Get(key)
+	if !ok {
+		return 0, false
+	}
+	expireAt, ok := raw.(int64)
+	if !ok {
+		return 0, false
+	}
+	return expireAt, true
+}
+
+// ClearExpire removes the expiration for a key.
+func (db *DB) ClearExpire(key string) {
+	db.expires.Remove(key)
+}
+
+// isExpired checks if the key is expired and deletes it if needed.
+func (db *DB) isExpired(key string) bool {
+	expireAt, ok := db.GetExpire(key)
+	if !ok {
+		return false
+	}
+	if time.Now().UnixMilli() >= expireAt {
+		db.Remove(key)
+		return true
+	}
+	return false
+}
+
 // GetEntity returns DataEntity bind to the given key
 func (db *DB) GetEntity(key string) (*database.DataEntity, bool) {
+	if db.isExpired(key) {
+		return nil, false
+	}
 	raw, ok := db.data.Get(key)
 	if !ok {
+		db.ClearExpire(key)
 		return nil, false
 	}
 	entity, _ := raw.(*database.DataEntity)
@@ -134,21 +177,32 @@ func (db *DB) GetEntity(key string) (*database.DataEntity, bool) {
 
 // PutEntity stores the given DataEntity in the database
 func (db *DB) PutEntity(key string, entity *database.DataEntity) int {
-	return db.data.Put(key, entity)
+	result := db.data.Put(key, entity)
+	db.ClearExpire(key)
+	return result
 }
 
 // PutIfExists edit the given DataEntity in the database
 func (db *DB) PutIfExists(key string, entity *database.DataEntity) int {
-	return db.data.PutIfExists(key, entity)
+	result := db.data.PutIfExists(key, entity)
+	if result > 0 {
+		db.ClearExpire(key)
+	}
+	return result
 }
 
 // PutIfAbsent stores the given DataEntity in the database if it doesn't already exist
 func (db *DB) PutIfAbsent(key string, entity *database.DataEntity) int {
-	return db.data.PutIfAbsent(key, entity)
+	result := db.data.PutIfAbsent(key, entity)
+	if result > 0 {
+		db.ClearExpire(key)
+	}
+	return result
 }
 
 // Remove deletes the DataEntity associated with the given key from the database
 func (db *DB) Remove(key string) int {
+	db.ClearExpire(key)
 	result := db.data.Remove(key)
 	// Clean up the lock for the deleted key to prevent memory leaks
 	if result > 0 {
@@ -236,6 +290,7 @@ func getAsZSet(db *DB, key string) (zset.ZSet, bool) {
 func (db *DB) Removes(keys ...string) int {
 	deleted := 0
 	for _, key := range keys {
+		db.ClearExpire(key)
 		result := db.data.Remove(key)
 		if result > 0 {
 			// Clean up the lock for the deleted key to prevent memory leaks
@@ -249,6 +304,7 @@ func (db *DB) Removes(keys ...string) int {
 // Flush clears the database by removing all DataEntity objects
 func (db *DB) Flush() {
 	db.data.Clear()
+	db.expires.Clear()
 	// Clear all locks when flushing the database
 	db.lockMgr.locks = sync.Map{}
 }

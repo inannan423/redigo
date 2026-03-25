@@ -70,11 +70,19 @@ TYPE key                       # 获取键的数据类型
 RENAME key newkey              # 重命名键
 RENAMENX key newkey            # 仅当新键不存在时重命名
 KEYS pattern                   # 查找匹配模式的键
+EXPIRE key seconds             # 设置过期时间（秒）
+PEXPIRE key milliseconds       # 设置过期时间（毫秒）
+EXPIREAT key timestamp         # 设置过期时间（秒时间戳）
+PEXPIREAT key milliseconds-timestamp # 设置过期时间（毫秒时间戳）
+TTL key                        # 获取剩余过期时间（秒）
+PTTL key                       # 获取剩余过期时间（毫秒）
+PERSIST key                    # 移除过期时间
 ```
 
 #### 📝 字符串操作
 ```bash
-SET key value                  # 设置键值对
+SET key value [EX seconds|PX milliseconds]  # 设置键值对并可选过期
+SETEX key seconds value        # 设置键值对并指定秒级过期
 GET key                        # 获取键的值
 SETNX key value               # 仅当键不存在时设置
 GETSET key value              # 设置新值并返回旧值
