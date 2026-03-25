@@ -164,7 +164,7 @@ func MakeOKReply() *OKReply {
 // NullBulkReply 空的 Bulk 回复(字符串 nil)
 type NullBulkReply struct{}
 
-func (r *EmptyBulkReply) ToBytes() []byte {
+func (r *NullBulkReply) ToBytes() []byte {
 	return []byte("$-1\r\n") // -1，表示 nil 值
 }
 
@@ -441,6 +441,11 @@ func MakeIntReply(code int64) *IntReply {
 // StatusReply 状态回复
 type StatusReply struct {
 	Status string
+}
+
+// ToBytes marshal redis.Reply
+func (r *StatusReply) ToBytes() []byte {
+	return []byte("+" + r.Status + CRLF)
 }
 
 // MakeStatusReply creates StatusReply
